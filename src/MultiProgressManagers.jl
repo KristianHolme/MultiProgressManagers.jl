@@ -186,7 +186,7 @@ function update_progress!(manager::MultiProgressManager, message::ProgressFinish
         return nothing
     end
     meter = manager.worker_meters[message.id]
-    finish!(meter)
+    finish!(meter; showvalues = [(iteration_string(0, meter), message.desc)])
     return nothing
 end
 
