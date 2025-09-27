@@ -4,7 +4,7 @@ using Distributed
 using ProgressMeter
 
 export MultiProgressManager
-export create_main_meter_task
+export create_main_meter_tasks
 export create_worker_meter_task
 export update_progress!
 
@@ -103,6 +103,7 @@ function create_worker_meter_task(manager::MultiProgressManager)
             end
         catch e
             if !(e isa InvalidStateException && !isopen(manager.worker_channel))
+                @info "Worker meter task error" exception = (e, catch_backtrace())
                 rethrow()
             end
         end
@@ -112,14 +113,15 @@ end
 
 function stop!(manager::MultiProgressManager, tasks::Task...)
     try
+        put!(manager.main_channel, false)
         close(manager.main_channel)
     catch e
-        @debug "Failed to close main channel" exception = (e, catch_backtrace())
+        @error "Failed to close main channel" exception = (e, catch_backtrace())
     end
     try
         close(manager.worker_channel)
     catch e
-        @debug "Failed to close worker channel" exception = (e, catch_backtrace())
+        @error "Failed to close worker channel" exception = (e, catch_backtrace())
     end
     for t in tasks
         if istaskstarted(t)
@@ -127,7 +129,7 @@ function stop!(manager::MultiProgressManager, tasks::Task...)
                 wait(t)
             catch e
                 if !(e isa InvalidStateException)
-                    @debug "Task wait error" exception = (e, catch_backtrace())
+                    @error "Task wait error" exception = (e, catch_backtrace())
                 end
             end
         end
@@ -139,22 +141,22 @@ function iteration_string(step::Int, progress_bar::Progress)
     return "$(progress_bar.counter + step) / $(progress_bar.n)"
 end
 
-function update_progress!(manager::MultiProgressManager, message::ProgressStepUpdate, info::String = "")
+function update_progress!(manager::MultiProgressManager, message::ProgressStepUpdate)
     if !haskey(manager.worker_meters, message.id)
         @warn "Worker index for id $(message.id) not found, doing nothing"
         return nothing
     end
     meter = manager.worker_meters[message.id]
     step = message.step
-    if step <= 0
-        @debug "Step $step is less than or equal to 0, doing nothing"
+    if step < 0
+        @warn "Step $step is less than 0, doing nothing"
         return nothing
     end
     if meter.counter + step > meter.n
         @warn "Step $step is greater than the steps left $(meter.counter)/$(meter.n), setting to $(meter.n - meter.counter)"
         step = meter.n - meter.counter
     end
-    next!(meter; step, showvalues = [(iteration_string(step, meter), info * " " * message.info)])
+    next!(meter; step, showvalues = [(iteration_string(step, meter), message.info)])
     return nothing
 end
 
