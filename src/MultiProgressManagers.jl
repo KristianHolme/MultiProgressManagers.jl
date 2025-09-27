@@ -168,7 +168,7 @@ function update_progress!(manager::MultiProgressManager, message::ProgressStart)
     manager.worker_meters[message.id] = progress
     @async begin
         sleep(0.1)
-        ProgressMeter.update!(progress, 0)
+        ProgressMeter.next!(progress, step = 0)
     end
     return nothing
 end
