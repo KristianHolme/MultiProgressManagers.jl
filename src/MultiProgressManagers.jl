@@ -66,7 +66,7 @@ function MultiProgressManager(n_jobs::Int, io::IO = stderr)
     return MultiProgressManager(main_meter, worker_meters, worker2index, main_channel, worker_channel, io)
 end
 
-function create_main_meter_task(manager::MultiProgressManager)
+function create_main_meter_tasks(manager::MultiProgressManager)
     t_periodic = @async begin
         try
             while isopen(manager.main_channel)
