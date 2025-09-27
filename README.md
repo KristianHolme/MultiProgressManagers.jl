@@ -11,34 +11,6 @@ The core type, `MultiProgressManager`, owns the shared `Progress` meters and the
 - `create_main_meter_task(manager)` returns a pair of housekeeping tasks; `create_worker_meter_task(manager)` returns the listener task that processes worker messages.
 - `stop!(manager, tasks...)` closes channels and waits for the spawned tasks to finish cleanly.
 
-## Basic Usage
-
-```julia
-using Distributed
-@everywhere using MultiProgressManagers
-
-n_jobs = 16
-manager = MultiProgressManager(n_jobs)
-t_periodic, t_update = create_main_meter_tasks(manager)
-t_worker = create_worker_meter_task(manager)
-
-# initialise a worker meter
-put!(manager.worker_channel, ProgressStart(Distributed.myid(), 100, "Worker $(Distributed.myid())"))
-
-# report progress from workers
-for _ in 1:25
-    put!(manager.worker_channel, ProgressStepUpdate(Distributed.myid(), 1, "batch done"))
-end
-
-# notify the aggregate meter that a job finished
-put!(manager.main_channel, true)
-
-# display a message for a worker process (0 steps)
-put!(manager.worker_channel, ProgressStepUpdate(Distributed.myid(), 0,"<useful information>"))
-
-stop!(manager, t_periodic, t_update, t_worker)
-```
-
 ### Full example
 
 ```julia
