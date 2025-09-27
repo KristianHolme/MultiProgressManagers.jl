@@ -39,6 +39,47 @@ put!(manager.worker_channel, ProgressStepUpdate(Distributed.myid(), 0,"<useful i
 stop!(manager, t_periodic, t_update, t_worker)
 ```
 
+### Full example
+
+```julia
+using Distributed
+
+tty = 8 #because the tty command  in my desired output terminal outputs /dev/pts/8
+addprocs(4)
+@everywhere using MultiProgressManagers
+@everywhere function do_work(i::Int, worker_channel::RemoteChannel)
+    put!(worker_channel, ProgressStart(myid(), 10, "Worker $(myid())"))
+    for j in 1:10
+        work_time = rand()*i*0.2
+        sleep(work_time)
+        put!(worker_channel, ProgressStepUpdate(myid(), 1, "Work time: $work_time"))
+        if rand() < 0.05
+            error("Error in worker $i")
+        end
+    end
+    put!(worker_channel, ProgressFinished(myid(), "Finished work!"))
+    return nothing
+end
+
+n_jobs = 20
+manager = MultiProgressManager(n_jobs, tty)
+t_periodic, t_update = create_main_meter_tasks(manager)
+t_worker = create_worker_meter_task(manager)
+
+configs = [(i, manager.main_channel, manager.worker_channel) for i in 1:n_jobs]
+results = pmap(configs, on_error = e -> 0) do (i, main_channel, worker_channel)
+    do_work(i, worker_channel)
+    put!(main_channel, true)
+    return 1
+end
+
+stop!(manager, t_periodic, t_update, t_worker)
+
+successes = sum(results)
+fails = length(results) - successes
+@info "Successes: $successes, Fails: $fails"
+```
+
 ### Terminal Snapshot
 
 ```
