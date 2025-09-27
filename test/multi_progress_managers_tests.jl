@@ -2,7 +2,7 @@
     using Distributed
     using ProgressMeter
     using Base: devnull
-    new_manager(n) = MultiProgressManager(n; io = devnull)
+    new_manager(n) = MultiProgressManager(n, devnull)
 end
 
 @testsnippet CallbackSetup begin
@@ -31,7 +31,7 @@ end
 
 @testitem "Constructor with io" setup = [CommonImports] begin
     io = IOBuffer()
-    manager = MultiProgressManager(3; io = io)
+    manager = MultiProgressManager(3, io)
     @test manager.main_meter.output === io
     close(manager.main_channel)
     close(manager.worker_channel)
@@ -42,7 +42,7 @@ end
         ty = open(path, "w")
         try
             ioctx = IOContext(ty, :color => true)
-            manager = MultiProgressManager(2; io = ioctx)
+            manager = MultiProgressManager(2, ioctx)
             @test manager.main_meter.output === ioctx
             close(manager.main_channel)
             close(manager.worker_channel)
@@ -120,7 +120,7 @@ end
 
 @testitem "Main channel closure" setup = [CommonImports] begin
     manager = new_manager(1)
-    t_periodic, t_update = create_main_meter_task(manager)
+    t_periodic, t_update = create_main_meter_tasks(manager)
     close(manager.main_channel)
     wait(t_periodic)
     wait(t_update)
@@ -137,7 +137,7 @@ end
 
 @testitem "Stop cleanup" setup = [CommonImports] begin
     manager = new_manager(1)
-    tasks = Tuple(create_main_meter_task(manager))
+    tasks = Tuple(create_main_meter_tasks(manager))
     stop!(manager, tasks...)
     @test !isopen(manager.main_channel)
     @test !isopen(manager.worker_channel)
@@ -182,7 +182,7 @@ end
 
 @testitem "Full lifecycle" setup = [CommonImports] begin
     manager = new_manager(3)
-    t_main = create_main_meter_task(manager)
+    t_main = create_main_meter_tasks(manager)
     t_worker = create_worker_meter_task(manager)
     update_progress!(manager, ProgressStart(1, 5, "Worker"))
     for _ in 1:4

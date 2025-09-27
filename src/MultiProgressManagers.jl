@@ -47,24 +47,13 @@ mutable struct MultiProgressManager
     io::IO
 end
 
-function MultiProgressManager(
-        n_jobs::Int;
-        io::Union{IO, Nothing} = nothing,
-        tty::Union{Int, Nothing} = nothing
-    )
-    output = if tty !== nothing
-        _open_tty(tty)
-    elseif io !== nothing
-        io
-    else
-        stderr
-    end
-    return _MultiProgressManager(n_jobs, output)
+function MultiProgressManager(n_jobs::Int, tty::Int)
+    return MultiProgressManager(n_jobs, _open_tty(tty))
 end
 
 _open_tty(tty::Int) = IOContext(open("/dev/pts/$(tty)", "w"), :color => true)
 
-function _MultiProgressManager(n_jobs::Int, io::IO)
+function MultiProgressManager(n_jobs::Int, io::IO = stderr)
     main_meter = Progress(n_jobs; desc = "Total Progress:", showspeed = true, output = io)
     @async begin
         sleep(0.1)
