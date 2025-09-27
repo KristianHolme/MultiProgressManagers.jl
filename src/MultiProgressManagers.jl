@@ -11,6 +11,7 @@ export update_progress!
 export ProgressMessage
 export ProgressStart
 export ProgressStepUpdate
+export ProgressFinished
 export ProgressStop
 export stop!
 
@@ -28,9 +29,14 @@ struct ProgressStepUpdate <: AbstractProgressMessage
     info::String
 end
 
+struct ProgressFinished <: AbstractProgressMessage
+    id::Int
+    desc::String
+end
+
 struct ProgressStop <: AbstractProgressMessage end
 
-const ProgressMessage = Union{ProgressStart, ProgressStepUpdate, ProgressStop}
+const ProgressMessage = Union{ProgressStart, ProgressStepUpdate, ProgressStop, ProgressFinished}
 
 mutable struct MultiProgressManager
     main_meter::Progress
@@ -180,6 +186,16 @@ end
 
 function update_progress!(manager::MultiProgressManager, ::ProgressStop)
     close(manager.worker_channel)
+    return nothing
+end
+
+function update_progress!(manager::MultiProgressManager, message::ProgressFinished)
+    if !haskey(manager.worker_meters, message.id)
+        @warn "Worker index for id $(message.id) not found, doing nothing"
+        return nothing
+    end
+    meter = manager.worker_meters[message.id]
+    finish!(meter)
     return nothing
 end
 
