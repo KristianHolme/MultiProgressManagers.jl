@@ -2,6 +2,13 @@
 
 Utilities for coordinating multiple [`ProgressMeter.jl`](https://github.com/timholy/ProgressMeter.jl) progress bars across distributed Julia workers.
 
+## Installation
+
+```julia
+using Pkg
+Pkg.add(url="https://github.com/KristianHolme/MultiProgressManagers.jl")
+```
+
 The core type, `MultiProgressManager`, owns the shared `Progress` meters and the `RemoteChannel`s that workers use to publish status updates. Helper functions spawn housekeeping tasks that keep the aggregate meters responsive without blocking your workloads.
 
 ## Key Concepts
@@ -85,13 +92,13 @@ An optional extension (`MultiProgressManagersDRiLExt`) defines `DRiLWorkerProgre
 Enable the extension by loading DRiL alongside this package, then do something like:
 
 ```julia
+using DRiL
+
 n_jobs = 42
 manager = MultiProgressManager(n_jobs)
 t_periodic, t_update = create_main_meter_tasks(manager)
 t_worker = create_worker_meter_task(manager)
-worker_channel = manager.worker_channel
 
-mgmDRiLExt = Base.get_extension(MultiProgressManagers, MultiProgressManagersDRiLExt)
-callback = mgmDRiLExt.DRiLWorkerProgressCallback(worker_channel)
+callback = create_dril_callback(manager.worker_channel)
 ```
 
