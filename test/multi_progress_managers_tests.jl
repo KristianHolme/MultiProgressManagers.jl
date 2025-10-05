@@ -282,12 +282,12 @@ end
     @test status.counter == 0
     @test status.total == 10
     @test status.progress == 0.0
-    
+
     update_progress!(manager, ProgressStepUpdate(1, 5, ""))
     status = get_worker_status(manager, 1)
     @test status.counter == 5
     @test status.progress == 0.5
-    
+
     close(manager.main_channel)
     close(manager.worker_channel)
 end
@@ -311,29 +311,29 @@ end
 @testitem "create_dril_callback integration" setup = [CommonImports, CallbackSetup] begin
     manager = new_manager(1)
     callback = create_dril_callback(manager.worker_channel)
-    
+
     # Test that callback works with DRiL lifecycle
     env = _Env(4)
     locals_start = Dict(:total_steps => 12, :env => env)
     @test DRiL.on_training_start(callback, locals_start) == true
-    
+
     # Check that ProgressStart message was sent
     msg = take!(manager.worker_channel)
     @test msg isa ProgressStart
     @test msg.total_steps == 12
-    
+
     # Test step callback
     locals_step = Dict(:env => env)
     @test DRiL.on_step(callback, locals_step) == true
     msg = take!(manager.worker_channel)
     @test msg isa ProgressStepUpdate
     @test msg.step == 4
-    
+
     # Test end callback
     @test DRiL.on_training_end(callback, Dict()) == true
     msg = take!(manager.worker_channel)
     @test msg isa ProgressFinished
-    
+
     close(manager.main_channel)
     close(manager.worker_channel)
 end
