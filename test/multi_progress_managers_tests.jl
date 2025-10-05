@@ -14,6 +14,23 @@ end
     DRiL.number_of_envs(env::_Env) = env.n_envs
 end
 
+@testitem "create_dril_callback without DRiL loaded" setup = [CommonImports] begin
+    # This needs to be first, otherwise the DRiL extension will be loaded!?
+    manager = new_manager(1)
+    @test_throws ErrorException create_dril_callback(manager.worker_channel)
+    close(manager.main_channel)
+    close(manager.worker_channel)
+end
+
+@testitem "create_dril_callback with DRiL loaded" setup = [CommonImports, CallbackSetup] begin
+    manager = new_manager(1)
+    callback = create_dril_callback(manager.worker_channel)
+    @test callback isa DRiLExt.DRiLWorkerProgressCallback
+    @test callback.worker_channel === manager.worker_channel
+    close(manager.main_channel)
+    close(manager.worker_channel)
+end
+
 @testitem "Constructor defaults" setup = [CommonImports] begin
     manager = MultiProgressManager(5)
     @test manager.main_meter.n == 5
@@ -288,22 +305,6 @@ end
     @test status.counter == 5
     @test status.progress == 0.5
 
-    close(manager.main_channel)
-    close(manager.worker_channel)
-end
-
-@testitem "create_dril_callback without DRiL loaded" setup = [CommonImports] begin
-    manager = new_manager(1)
-    @test_throws ErrorException create_dril_callback(manager.worker_channel)
-    close(manager.main_channel)
-    close(manager.worker_channel)
-end
-
-@testitem "create_dril_callback with DRiL loaded" setup = [CommonImports, CallbackSetup] begin
-    manager = new_manager(1)
-    callback = create_dril_callback(manager.worker_channel)
-    @test callback isa DRiLExt.DRiLWorkerProgressCallback
-    @test callback.worker_channel === manager.worker_channel
     close(manager.main_channel)
     close(manager.worker_channel)
 end
