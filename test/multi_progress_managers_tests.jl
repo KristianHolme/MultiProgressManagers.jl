@@ -69,6 +69,20 @@ end
     end
 end
 
+@testitem "Constructor with main_desc" setup = [CommonImports] begin
+    mktemp() do path, _
+        ty = open(path, "w")
+        try
+            ioctx = IOContext(ty, :color => true)
+            manager = MultiProgressManager(2, ioctx, main_desc = "experiment 1")
+            @test manager.main_meter.desc == "experiment 1"
+            close(manager.main_channel)
+            close(manager.worker_channel)
+        finally
+            close(ty)
+        end
+    end
+end
 @testitem "Worker index expansion" setup = [CommonImports] begin
     manager = new_manager(2)
     msg = ProgressStart(9999, 10, "Worker 9999")

@@ -100,34 +100,34 @@ mutable struct MultiProgressManager
     io::IO
 end
 
-function MultiProgressManager(n_jobs::Int, tty::Int)
-    return MultiProgressManager(n_jobs, _open_tty(tty))
+function MultiProgressManager(n_jobs::Int, tty::Int; kwargs...)
+    return MultiProgressManager(n_jobs, _open_tty(tty); kwargs...)
 end
 
 _open_tty(tty::Int) = IOContext(open("/dev/pts/$(tty)", "w"), :color => true)
 
 """
-    MultiProgressManager(n_jobs::Int, io::IO=stderr)
+    MultiProgressManager(n_jobs::Int, io::IO=stderr; main_desc::String = "Total Progress:")
 
 Create a progress manager for coordinating progress bars across `n_jobs` distributed tasks.
 
 # Arguments
 - `n_jobs::Int`: Total number of jobs to track (must be positive)
 - `io::IO=stderr`: IO stream for progress output (default: stderr)
-
+- `main_desc::String = "Total Progress:": Description of the main progress meter
 # Returns
 - `MultiProgressManager`: Manager instance with channels and meters
 
 # Example
 ```julia
 manager = MultiProgressManager(20)
+manager = MultiProgressManager(20, main_desc = "Total Progress:")
 ```
-
 See also: [`create_main_meter_tasks`](@ref), [`create_worker_meter_task`](@ref), [`stop!`](@ref)
 """
-function MultiProgressManager(n_jobs::Int, io::IO = stderr)
+function MultiProgressManager(n_jobs::Int, io::IO = stderr; main_desc::String = "Total Progress:")
     n_jobs > 0 || throw(ArgumentError("n_jobs must be positive, got $n_jobs"))
-    main_meter = Progress(n_jobs; desc = "Total Progress:", showspeed = true, output = io)
+    main_meter = Progress(n_jobs; desc = main_desc, showspeed = true, output = io)
     @async begin
         sleep(0.1)
         ProgressMeter.update!(main_meter, 0)
@@ -406,14 +406,14 @@ end
 """
 function get_worker_status(manager::MultiProgressManager, worker_id::Int)
     if !haskey(manager.worker_meters, worker_id)
-        return (exists=false, counter=nothing, total=nothing, progress=nothing)
+        return (exists = false, counter = nothing, total = nothing, progress = nothing)
     end
     meter = manager.worker_meters[worker_id]
     return (
-        exists=true,
-        counter=meter.counter,
-        total=meter.n,
-        progress=meter.counter / meter.n
+        exists = true,
+        counter = meter.counter,
+        total = meter.n,
+        progress = meter.counter / meter.n,
     )
 end
 
