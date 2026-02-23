@@ -8,10 +8,10 @@ Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 
 [weakdeps]
-DRiL = "49b37b9d-a8e6-4364-9144-4677bcb8a7f0"
+Drill = "49b37b9d-a8e6-4364-9144-4677bcb8a7f0"
 
 [extensions]
-MultiProgressManagersDRiLExt = "DRiL"
+MultiProgressManagersDrillExt = "Drill"
 
 [compat]
 Distributed = "1.11.0"
