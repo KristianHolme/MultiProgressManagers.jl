@@ -120,6 +120,7 @@ end
 
 function _enter_edit_mode!(m::ProgressDashboard)
     m.admin_selected == 0 && return
+    m.admin_selected > length(m.admin_experiments) && return
     
     exp = m.admin_experiments[m.admin_selected]
     
@@ -160,6 +161,7 @@ end
 
 function _save_admin_edit!(m::ProgressDashboard)
     m.admin_selected == 0 && return
+    m.admin_selected > length(m.admin_experiments) && return
     
     exp = m.admin_experiments[m.admin_selected]
     input = m.admin_edit_input
@@ -181,6 +183,9 @@ end
 function _handle_confirm_modal!(m::ProgressDashboard, evt::KeyEvent)
     if evt.key == :char && evt.char == 'y'
         # Confirm action
+        m.admin_selected == 0 && return
+        m.admin_selected > length(m.admin_experiments) && return
+        
         exp = m.admin_experiments[m.admin_selected]
         
         @match m.admin_confirm_action begin

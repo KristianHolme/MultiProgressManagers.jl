@@ -52,9 +52,17 @@ end
 function _render_db_preview!(m::ProgressDashboard, db_path::String, area::Rect, buf)
     # Try to load database and show summary
     try
-        # Get stats
-        stats = Database.get_experiment_stats(m.db_handle, days=7)
-        running = Database.get_running_experiments(m.db_handle)
+        # Refresh preview cache if stale (older than 1 second)
+        current_time = time()
+        if m._last_preview_refresh === nothing || 
+           (current_time - m._last_preview_refresh) > 1.0
+            m._cached_preview_stats = Database.get_experiment_stats(m.db_handle, days=7)
+            m._cached_preview_running = Database.get_running_experiments(m.db_handle)
+            m._last_preview_refresh = current_time
+        end
+        
+        stats = m._cached_preview_stats
+        running = m._cached_preview_running
         
         y = area.y
         x = area.x

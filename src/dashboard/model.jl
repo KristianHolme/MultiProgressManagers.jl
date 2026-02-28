@@ -97,6 +97,9 @@ end
     # Cache
     _cached_detail_experiment::Union{String,Nothing} = nothing
     _cached_detail_history::Vector = []
+    _cached_preview_stats::Union{NamedTuple,Nothing} = nothing
+    _cached_preview_running::Union{DataFrames.DataFrame,Nothing} = nothing
+    _last_preview_refresh::Float64 = 0.0
 end
 
 # === Helper Functions ===
@@ -231,6 +234,13 @@ function _poll_database!(m::ProgressDashboard)
             finished_at = exp.finished_at,
             final_message = exp.final_message
         )
+    end
+    
+    # Ensure admin_selected stays valid after list refresh
+    if isempty(m.admin_experiments)
+        m.admin_selected = 0
+    elseif m.admin_selected > length(m.admin_experiments)
+        m.admin_selected = length(m.admin_experiments)
     end
 end
 
