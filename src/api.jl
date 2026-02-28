@@ -120,7 +120,8 @@ function update!(manager::ProgressManager, current_step::Int; info::String="")
         end
         db_handle = tls[:mpm_db_handle]
         
-        Database.record_progress!(db_handle, manager.experiment_id, current_step, elapsed)
+        elapsed_ms = round(Int, elapsed * 1000)
+        Database.record_progress!(db_handle, manager.experiment_id, current_step, elapsed_ms; info=info)
         manager.last_update_time = current_time
     end
     

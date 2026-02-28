@@ -10,8 +10,6 @@ module DistributedSupport
 using Distributed
 using ..MultiProgressManagers: ProgressManager, ProgressMessage, ProgressStart, ProgressUpdate, 
                                 ProgressComplete, ProgressError
-using ..MultiProgressManagers: ProgressMessage, ProgressStart, ProgressUpdate, 
-                                ProgressComplete, ProgressError
 
 export create_worker_task, worker_update!, worker_done!, worker_failed!
 
@@ -103,9 +101,17 @@ end
 function _handle_worker_message!(manager, msg::ProgressUpdate)
     # Aggregate worker progress into overall progress
     # For now, we just record the update with worker attribution
+    tls = task_local_storage()
+    if !haskey(tls, :mpm_db_handle)
+        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
+    end
+    db_handle = tls[:mpm_db_handle]
+    
     elapsed = time() - manager.start_time
-    Database.record_progress!(manager.experiment_id, msg.current_step, elapsed;
-                             worker_id=msg.worker_id)
+    elapsed_ms = round(Int, elapsed * 1000)
+    
+    Database.record_progress!(db_handle, manager.experiment_id, msg.current_step, elapsed_ms;
+                             info="Worker $(msg.worker_id)", worker_id=msg.worker_id)
     
     manager.last_step = msg.current_step
     manager.last_update_time = time()
