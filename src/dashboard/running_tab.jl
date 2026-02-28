@@ -134,7 +134,8 @@ function _render_experiment_detail!(m::ProgressDashboard, exp::ExperimentSummary
         y += 1
     end
     if y <= bottom(area)
-        set_string!(buf, x, y, "Started: $(exp.started_at)", tstyle(:text_dim); max_x = max_x)
+        started_str = ismissing(exp.started_at) ? "N/A" : string(exp.started_at)
+        set_string!(buf, x, y, "Started: $(started_str)", tstyle(:text_dim); max_x = max_x)
         y += 2
     end
     

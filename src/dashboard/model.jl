@@ -22,7 +22,7 @@ const tsplit = Tachikoma.split
     name::String
     progress_pct::Float64
     status::Symbol
-    started_at::DateTime
+    started_at::Union{DateTime,Missing}
     total_avg_speed::Float64
     short_avg_speed::Float64
     eta_seconds::Union{Float64,Nothing}
@@ -36,8 +36,8 @@ end
     total_steps::Int
     current_step::Int
     status::Symbol
-    started_at::DateTime
-    finished_at::Union{DateTime,Nothing}
+    started_at::Union{DateTime,Missing}
+    finished_at::Union{DateTime,Nothing,Missing}
     final_message::String
 end
 

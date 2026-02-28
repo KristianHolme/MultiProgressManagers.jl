@@ -110,10 +110,11 @@ function _render_experiment_edit!(m::ProgressDashboard, exp::ExperimentAdminView
     y += 1
     
     # Dates
-    set_string!(buf, x, y, "Started: $(exp.started_at)", tstyle(:text_dim); max_x = max_x)
+    started_str = ismissing(exp.started_at) ? "N/A" : string(exp.started_at)
+    set_string!(buf, x, y, "Started: $(started_str)", tstyle(:text_dim); max_x = max_x)
     y += 1
     
-    if exp.finished_at !== nothing
+    if !ismissing(exp.finished_at) && exp.finished_at !== nothing
         set_string!(buf, x, y, "Finished: $(exp.finished_at)", tstyle(:text_dim); max_x = max_x)
         y += 1
     end
