@@ -17,7 +17,7 @@ const tsplit = Tachikoma.split
 
 # === View Types ===
 
-struct ExperimentSummary
+@kwdef struct ExperimentSummary
     id::String
     name::String
     progress_pct::Float64
@@ -29,7 +29,7 @@ struct ExperimentSummary
     sparkline::Vector{Float64}
 end
 
-struct ExperimentAdminView
+@kwdef struct ExperimentAdminView
     id::String
     name::String
     description::String
