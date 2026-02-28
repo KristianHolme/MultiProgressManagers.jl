@@ -12,13 +12,13 @@ function Tachikoma.update!(m::ProgressDashboard, evt::KeyEvent)
     # Tab switching
     max_tab = m.folder_mode ? 4 : 3
     
-    if evt.key == :f1
+    if evt.key == :f1 || (evt.key == :char && evt.char == '1')
         m.active_tab = 1
-    elseif evt.key == :f2
+    elseif evt.key == :f2 || (evt.key == :char && evt.char == '2')
         m.active_tab = min(2, max_tab)
-    elseif evt.key == :f3
+    elseif evt.key == :f3 || (evt.key == :char && evt.char == '3')
         m.active_tab = min(3, max_tab)
-    elseif evt.key == :f4 && max_tab >= 4
+    elseif (evt.key == :f4 || (evt.key == :char && evt.char == '4')) && max_tab >= 4
         m.active_tab = 4
     elseif evt.key == :left || (evt.key == :char && evt.char == 'h')
         m.active_tab = max(1, m.active_tab - 1)

@@ -386,7 +386,7 @@ function get_running_experiments(handle::DBHandle)
         DBInterface.execute(
             db,
             """
-            SELECT id, name, total_steps, current_step, started_at, worker_count,
+            SELECT id, name, total_steps, current_step, started_at, worker_count, status,
                    CAST(current_step AS FLOAT) / total_steps as progress_pct
             FROM experiments 
             WHERE status = 'running'
