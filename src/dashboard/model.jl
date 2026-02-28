@@ -5,22 +5,12 @@ Dashboard model and types for Tachikoma-based MultiProgressManagers UI.
 using Tachikoma
 using Dates
 using Match
-using Dates
 
 import Tachikoma: TabBar, SelectableList, ListItem, Table, Gauge, Sparkline, 
                   BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
                   render_resize_handles!, handle_resize!, DataTable, DataColumn,
                   ProgressList, ProgressItem, Block, Paragraph, StatusBar,
                   tstyle, BOX_HEAVY
-
-const tsplit = Tachikoma.split
-                  BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
-                  render_resize_handles!, handle_resize!, DataTable, DataColumn,
-                  ProgressList, ProgressItem, Block, Paragraph, StatusBar,
-                  tstyle, BOX_HEAVY
-                  BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
-                  render_resize_handles!, handle_resize!, DataTable, DataColumn,
-                  ProgressList, ProgressItem, Block, Paragraph
 
 const tsplit = Tachikoma.split
 
@@ -59,6 +49,7 @@ end
     
     # Database
     db_path::String = ""
+    db_handle::Union{Database.DBHandle,Nothing} = nothing
     folder_mode::Bool = false  # true if viewing a folder of experiments
     folder_path::String = ""
     available_dbs::Vector{String} = String[]
@@ -155,11 +146,12 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
     end
     
     # Initialize first database
-    Database.init_db!(available_dbs[1])
+    db_handle = Database.init_db!(available_dbs[1])
     
     # Create model
     model = ProgressDashboard(
         db_path = folder_mode ? "" : db_path,
+        db_handle = db_handle,
         folder_mode = folder_mode,
         folder_path = folder_mode ? db_path : "",
         available_dbs = available_dbs,
@@ -172,7 +164,7 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
     Tachikoma.app(model; fps=60)
     
     # Cleanup
-    Database.close_db!()
+    Database.close!(m.db_handle)
 end
 
 """
@@ -194,12 +186,14 @@ function _poll_database!(m::ProgressDashboard)
     end
     m._last_poll = current_time
     
+    m.db_handle === nothing && return
+    
     # Refresh running experiments
-    experiments = Database.get_running_experiments()
+    experiments = Database.get_running_experiments(m.db_handle)
     
     m.running_experiments = map(experiments) do exp
-        speeds = Database.calculate_speeds(exp.id; window_seconds=m.speed_window_seconds)
-        sparkline = Database.get_recent_speeds(exp.id; n=20, window_seconds=60)
+        speeds = Database.calculate_speeds(m.db_handle, exp.id; window_seconds=m.speed_window_seconds)
+        sparkline = Database.get_recent_speeds(m.db_handle, exp.id; n=20, window_seconds=60)
         
         # Calculate ETA
         remaining_steps = exp.total_steps - exp.current_step
@@ -223,7 +217,7 @@ function _poll_database!(m::ProgressDashboard)
     end
     
     # Refresh admin list (all experiments)
-    all_exps = Database.get_all_experiments(limit=100)
+    all_exps = Database.get_all_experiments(m.db_handle; limit=100)
     m.admin_experiments = map(all_exps) do exp
         ExperimentAdminView(
             id = exp.id,

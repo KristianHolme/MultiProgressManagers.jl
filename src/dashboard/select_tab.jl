@@ -20,7 +20,7 @@ function _view_select_tab!(m::ProgressDashboard, area::Rect, buf)
         name = basename(db_path)
         # Try to get experiment count
         try
-            count = length(Database.get_all_experiments(limit=1000))
+            count = length(Database.get_all_experiments(m.db_handle, limit=1000))
             "$name ($count runs)"
         catch
             name
@@ -52,14 +52,9 @@ end
 function _render_db_preview!(m::ProgressDashboard, db_path::String, area::Rect, buf)
     # Try to load database and show summary
     try
-        # Switch to this DB temporarily
-        current_db = Database.get_db()
-        Database.close_db!()
-        Database.init_db!(db_path)
-        
         # Get stats
-        stats = Database.get_experiment_stats(days=7)
-        running = Database.get_running_experiments()
+        stats = Database.get_experiment_stats(m.db_handle, days=7)
+        running = Database.get_running_experiments(m.db_handle)
         
         y = area.y
         x = area.x
@@ -88,12 +83,6 @@ function _render_db_preview!(m::ProgressDashboard, db_path::String, area::Rect, 
             if length(running) > 3
                 set_string!(buf, x, y, "  ... and $(length(running) - 3) more", tstyle(:text_dim); max_x = right(area))
             end
-        end
-        
-        # Restore original DB
-        Database.close_db!()
-        if m.db_path !== nothing && !isempty(m.db_path)
-            Database.init_db!(m.db_path)
         end
         
     catch e

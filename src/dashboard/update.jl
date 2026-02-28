@@ -47,8 +47,8 @@ function _update_select_tab!(m::ProgressDashboard, evt::KeyEvent)
         # Switch to selected database
         new_db = m.available_dbs[m.selected_db_index]
         m.db_path = new_db
-        Database.close_db!()
-        Database.init_db!(new_db)
+        Database.close_db!(m.db_handle)
+        m.db_handle = Database.init_db!(new_db)
         # Switch to running tab
         m.active_tab = 2
     end
@@ -168,12 +168,12 @@ function _save_admin_edit!(m::ProgressDashboard)
     value = Tachikoma.text(input)
     
     @match m.admin_edit_field begin
-        1 => Database.update_experiment_status!(exp.id, value)
+        1 => Database.update_experiment_status!(m.db_handle, exp.id, value)
         2 => begin
             new_step = parse(Int, value)
-            Database.update_experiment_steps!(exp.id, new_step)
+            Database.update_experiment_steps!(m.db_handle, exp.id, new_step)
         end
-        3 => Database.update_experiment_status!(exp.id, string(exp.status); message=value)
+        3 => Database.update_experiment_status!(m.db_handle, exp.id, string(exp.status); message=value)
         _ => nothing
     end
 end
@@ -184,8 +184,8 @@ function _handle_confirm_modal!(m::ProgressDashboard, evt::KeyEvent)
         exp = m.admin_experiments[m.admin_selected]
         
         @match m.admin_confirm_action begin
-            :complete => Database.update_experiment_status!(exp.id, "completed")
-            :reset => Database.update_experiment_status!(exp.id, "running")
+            :complete => Database.update_experiment_status!(m.db_handle, exp.id, "completed")
+            :reset => Database.update_experiment_status!(m.db_handle, exp.id, "running")
             :delete => _delete_experiment!(m, exp.id)
             _ => nothing
         end
@@ -199,6 +199,6 @@ end
 
 function _delete_experiment!(m::ProgressDashboard, experiment_id::String)
     # Actually delete from database
-    db = Database.get_db()
+    db = Database.ensure_open!(m.db_handle)
     DBInterface.execute(db, "DELETE FROM experiments WHERE id = ?", [experiment_id])
 end

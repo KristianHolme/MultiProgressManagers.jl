@@ -15,7 +15,7 @@ function _view_stats_tab!(m::ProgressDashboard, area::Rect, buf)
     hist_area = render(hist_block, rows[1], buf)
     
     # Calculate histogram
-    histogram = Database.get_completion_histogram(10)
+    histogram = Database.get_completion_histogram(m.db_handle, 10)
     m.completion_histogram = histogram
     
     if isempty(histogram) || sum(histogram) == 0
@@ -53,7 +53,7 @@ function _view_stats_tab!(m::ProgressDashboard, area::Rect, buf)
     
     # Refresh stats if needed
     if time() - m.last_stats_refresh > 30  # Refresh every 30 seconds
-        m.total_stats = Database.get_experiment_stats(days=7)
+        m.total_stats = Database.get_experiment_stats(m.db_handle, days=7)
         m.last_stats_refresh = time()
     end
     
@@ -97,7 +97,7 @@ function _view_stats_tab!(m::ProgressDashboard, area::Rect, buf)
         
         # Query daily stats
         try
-            db = Database.get_db()
+            db = Database.ensure_open!(m.db_handle)
             daily = DBInterface.execute(db, """
                 SELECT date, total_started, completed, failed, running
                 FROM v_daily_experiments
