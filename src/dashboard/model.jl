@@ -5,6 +5,7 @@ Dashboard model and types for Tachikoma-based MultiProgressManagers UI.
 using Tachikoma
 using Dates
 using Match
+using DataFrames
 
 import Tachikoma: TabBar, SelectableList, ListItem, Table, Gauge, Sparkline, 
                   BarChart, BarEntry, TextInput, ResizableLayout, split_layout,

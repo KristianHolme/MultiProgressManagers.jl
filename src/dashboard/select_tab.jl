@@ -20,7 +20,7 @@ function _view_select_tab!(m::ProgressDashboard, area::Rect, buf)
         name = basename(db_path)
         # Try to get experiment count
         try
-            count = length(Database.get_all_experiments(m.db_handle, limit=1000))
+            count = nrow(Database.get_all_experiments(m.db_handle, limit=1000))
             "$name ($count runs)"
         catch
             name
@@ -76,12 +76,13 @@ function _render_db_preview!(m::ProgressDashboard, db_path::String, area::Rect, 
         if !isempty(running)
             set_string!(buf, x, y, "Currently running:", tstyle(:accent, bold = true); max_x = right(area))
             y += 1
-            for exp in running[1:min(3, length(running))]
+            num_running = nrow(running)
+            for exp in running[1:min(3, num_running), :]
                 set_string!(buf, x, y, "  • $(exp.name)", tstyle(:text); max_x = right(area))
                 y += 1
             end
-            if length(running) > 3
-                set_string!(buf, x, y, "  ... and $(length(running) - 3) more", tstyle(:text_dim); max_x = right(area))
+            if num_running > 3
+                set_string!(buf, x, y, "  ... and $(num_running - 3) more", tstyle(:text_dim); max_x = right(area))
             end
         end
         
