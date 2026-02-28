@@ -1,104 +1,260 @@
 # MultiProgressManagers.jl
 
-Utilities for coordinating multiple [`ProgressMeter.jl`](https://github.com/timholy/ProgressMeter.jl) progress bars across distributed Julia workers.
+A modern progress tracking system for Julia with a Tachikoma.jl-based dashboard and SQLite persistence.
+
+> **Note**: This is version 0.1.0, a complete rewrite using a custom dashboard backend instead of ProgressMeter.jl. If you need the old ProgressMeter-based implementation, use version 0.0.x.
+
+## Features
+
+- **📊 Tachikoma Dashboard**: Rich terminal UI with multiple tabs and real-time updates
+- **💾 SQLite Persistence**: Full history retention for detailed analytics
+- **🚀 Distributed Support**: Track progress across multiple workers via RemoteChannels
+- **⚡ Speed Metrics**: Both total average and short-horizon (configurable) speed calculations
+- **🔧 Admin Tools**: Manual database editing for fixing stuck experiments
+- **📈 Statistics**: Completion histograms and aggregate metrics
 
 ## Installation
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/KristianHolme/MultiProgressManagers.jl")
+Pkg.add("MultiProgressManagers")
 ```
 
-The core type, `MultiProgressManager`, owns the shared `Progress` meters and the `RemoteChannel`s that workers use to publish status updates. Helper functions spawn housekeeping tasks that keep the aggregate meters responsive without blocking your workloads.
+## Quick Start
 
-## Key Concepts
+### Basic Usage
 
-- `MultiProgressManager(n_jobs; io=stderr, tty=nothing)` creates the top-level meter plus per-worker bookkeeping. 
-- Workers communicate via `ProgressMessage`s: `ProgressStart`, `ProgressStepUpdate`, `ProgressFinished`, and `ProgressStop`.
-- `create_main_meter_task(manager)` returns a pair of housekeeping tasks; `create_worker_meter_task(manager)` returns the listener task that processes worker messages.
-- `stop!(manager, tasks...)` closes channels and waits for the spawned tasks to finish cleanly.
+```julia
+using MultiProgressManagers
 
-### Full example
+# Create a progress manager
+manager = create_progress_manager("Training Run", 10000;
+                                   description="Epoch 1-10 of ResNet training",
+                                   db_path="./progresslogs/experiment1.db")
+
+# In your computation loop:
+for i in 1:10000
+    do_work(i)
+    update!(manager, i; info="Processing batch $i/10000")
+end
+
+# Mark as complete
+finish!(manager; message="Training completed successfully")
+```
+
+### Viewing the Dashboard
+
+```bash
+# From shell:
+mpm ./progresslogs/experiment1.db
+
+# Or from Julia:
+using MultiProgressManagers
+view_dashboard("./progresslogs/experiment1.db")
+```
+
+## Dashboard Tabs
+
+### 1. Running Experiments
+Shows all currently running experiments with:
+- Progress percentage
+- ETA based on short-horizon speed
+- Total and short-horizon average speeds
+- Real-time sparkline of speed trends
+
+### 2. Statistics  
+- Completion distribution histogram (10% bins)
+- Aggregate metrics (total, completed, failed, running)
+- Average duration and success rate
+- Daily breakdown table
+
+### 3. Admin
+Manual database editing:
+- View all experiments (running and historical)
+- Edit experiment status, step count, and messages
+- Mark stuck experiments as completed
+- Delete erroneous records
+
+## API Reference
+
+### Creating a ProgressManager
+
+```julia
+create_progress_manager(name::String, total_steps::Int;
+                       description::String="",
+                       db_path::String=default_db_path(),
+                       update_frequency_ms::Int=100,
+                       speed_window_seconds::Real=30,
+                       worker_count::Int=1) -> ProgressManager
+```
+
+**Parameters:**
+- `name`: Human-readable experiment name (shown in dashboard)
+- `total_steps`: Total number of steps to complete
+- `description`: Optional longer description
+- `db_path`: Path to SQLite database file
+- `update_frequency_ms`: Minimum time between DB writes (throttling)
+- `speed_window_seconds`: Time window for short-horizon speed calculation
+- `worker_count`: Number of workers for distributed runs
+
+### Recording Progress
+
+```julia
+update!(manager::ProgressManager, current_step::Int; info::String="")
+```
+
+Records a progress update. Writes to database with throttling based on `update_frequency_ms`.
+
+### Finishing an Experiment
+
+```julia
+finish!(manager::ProgressManager; message::String="Completed successfully")
+fail!(manager::ProgressManager, error::Exception; message=nothing)
+fail!(manager::ProgressManager, error_message::String)
+```
+
+### Querying Progress
+
+```julia
+get_progress(manager::ProgressManager) -> Float64  # 0.0 to 1.0
+get_speeds(manager::ProgressManager) -> NamedTuple  # (total_avg_speed, short_avg_speed)
+```
+
+## Distributed Computing
+
+MultiProgressManagers supports tracking progress across distributed workers:
 
 ```julia
 using Distributed
-
-tty = 8 #because the tty command  in my desired output terminal outputs /dev/pts/8
 addprocs(4)
+
 @everywhere using MultiProgressManagers
-@everywhere function do_work(i::Int, worker_channel::RemoteChannel)
-    put!(worker_channel, ProgressStart(myid(), 10, "Worker $(myid())"))
-    for j in 1:10
-        work_time = rand()*i*0.2
-        sleep(work_time)
-        put!(worker_channel, ProgressStepUpdate(myid(), 1, "Work time: $work_time"))
-        if rand() < 0.05
-            error("Error in worker $i")
-        end
-    end
-    put!(worker_channel, ProgressFinished(myid(), "Finished work!"))
-    return nothing
+
+# Create manager with worker support
+manager = create_progress_manager("Distributed Training", 10000;
+                                   worker_count=4)
+
+# Create worker listener task
+worker_task = create_worker_task(manager)
+
+# Distribute work
+@sync @distributed for i in 1:10000
+    do_work(i)
+    worker_update!(manager.worker_channel, i; info="Worker $(myid()) step $i")
 end
 
-n_jobs = 20
-manager = MultiProgressManager(n_jobs, tty)
-t_periodic, t_update = create_main_meter_tasks(manager)
-t_worker = create_worker_meter_task(manager)
-
-configs = [(i, manager.main_channel, manager.worker_channel) for i in 1:n_jobs]
-results = pmap(configs, on_error = e -> 0) do (i, main_channel, worker_channel)
-    do_work(i, worker_channel)
-    put!(main_channel, true)
-    return 1
-end
-
-stop!(manager, t_periodic, t_update, t_worker)
-
-successes = sum(results)
-fails = length(results) - successes
-@info "Successes: $successes, Fails: $fails"
+# Cleanup
+finish!(manager)
 ```
 
-### Terminal Snapshot
+## Database Schema
 
-```
-Total Progress:  47%|██████████▎           |  ETA: 0:01:53 (14.10  s/it)
-   Jobs: 7 / 15
-Worker 2 100%|█████████████████████████████| Time: 0:01:13 (11.97 ms/it)
-   6144 / 6144: Evaluating...
-Worker 3 100%|█████████████████████████████| Time: 0:00:07 ( 1.24 ms/it)
-   6144 / 6144: Evaluating...
-Worker 4   2%|▌                            |  ETA: 0:00:30 ( 5.42 ms/it)
-   96 / 5552:
-Worker 5   2%|▌                            |  ETA: 0:01:03 (11.61 ms/it)
-   96 / 5552:
-Worker 6  31%|█████████                    |  ETA: 0:00:11 ( 2.52 ms/it)
-   1904 / 6144:
-Worker 7  41%|███████████▊                 |  ETA: 0:01:50 (33.31 ms/it)
-   2256 / 5552:
-Worker 8  41%|████████████                 |  ETA: 0:01:57 (35.80 ms/it)
-   2288 / 5552:
-Worker 9   2%|▌                            |  ETA: 0:00:59 (10.84 ms/it)
-   96 / 5552:
-Worker 10 100%|████████████████████████████| Time: 0:01:10 (11.43 ms/it)
-   6144 / 6144: Evaluating...
-```
+The SQLite database maintains full history:
 
+### experiments table
+- `id`: UUID primary key
+- `name`, `description`: Experiment metadata
+- `total_steps`, `current_step`: Progress tracking
+- `status`: running, completed, failed, cancelled
+- `started_at`, `finished_at`: Timestamps
+- `worker_count`: Number of distributed workers
 
-## DRiL Integration
+### progress_snapshots table
+- Full history of every progress update
+- `timestamp`, `current_step`, `total_elapsed_ms`
+- `delta_steps`, `delta_ms`: For speed calculations
+- `worker_id`: For distributed tracking
 
-An optional extension (`MultiProgressManagersDRiLExt`) defines `DRiLWorkerProgressCallback`, which plugs into the [`DRiL`](https://github.com/KristianHolme/DRiL.jl) RL training loop. It uses `ProgressStart`, `ProgressStepUpdate`, and `ProgressFinished` messages that mirror the training lifecycle across parallel environments.
+## CLI Tool: mpm
 
-Enable the extension by loading DRiL alongside this package, then do something like:
+The `mpm` command provides easy dashboard access:
 
-```julia
-using DRiL
+```bash
+# View single experiment
+mpm ./progresslogs/experiment1.db
 
-n_jobs = 42
-manager = MultiProgressManager(n_jobs)
-t_periodic, t_update = create_main_meter_tasks(manager)
-t_worker = create_worker_meter_task(manager)
+# View folder of experiments  
+mpm ./progresslogs/
 
-callback = create_dril_callback(manager.worker_channel)
+# View default database
+mpm .
+
+# Show help
+mpm --help
 ```
 
+Install the CLI:
+```bash
+julia --project -e 'using Pkg; Pkg.add("MultiProgressManagers")'
+# Then add to PATH or create alias
+```
+
+## Configuration
+
+### Database Location
+
+By default, databases are created in `./progresslogs/{uuid}.db` if that directory exists, otherwise in `~/.local/share/MultiProgressManagers/default.db`.
+
+### Update Frequency
+
+The `update_frequency_ms` parameter controls throttling:
+- Lower values = more frequent updates, more DB writes
+- Higher values = fewer DB writes, better performance
+- Default: 100ms (10 writes per second max)
+
+For slow tasks, you can increase this significantly (e.g., 1000ms for once-per-second updates).
+
+### Speed Calculation Window
+
+The `speed_window_seconds` controls the short-horizon speed:
+- Shorter windows = more responsive to recent changes
+- Longer windows = smoother, more stable readings
+- Default: 30 seconds
+
+## Keyboard Shortcuts
+
+In the dashboard:
+- `1-4`: Switch tabs
+- `↑↓`: Navigate lists
+- `Enter`: Select / Open
+- `q`: Quit
+
+### Admin Tab Shortcuts
+- `e`: Edit experiment
+- `c`: Mark as completed
+- `r`: Reset to running  
+- `d`: Delete experiment
+- `y/n`: Confirm/cancel in modals
+
+## Differences from v0.0.x
+
+This is a complete rewrite with different priorities:
+
+| Feature | v0.0.x | v0.1.0+ |
+|---------|--------|---------|
+| Display | ProgressMeter.jl | Tachikoma dashboard |
+| Persistence | None | SQLite with full history |
+| Speed metrics | None | Total + configurable short-horizon |
+| Admin tools | None | Full DB editing |
+| Dashboard | Terminal bars | Multi-tab TUI |
+| Distributed | RemoteChannels | RemoteChannels + DB |
+
+## Development
+
+Run tests:
+```bash
+julia --project -e 'using Pkg; Pkg.test()'
+```
+
+Build documentation:
+```bash
+cd docs && julia make.jl
+```
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions welcome! Please open an issue to discuss changes before submitting PRs.
