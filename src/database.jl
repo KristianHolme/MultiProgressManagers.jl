@@ -626,10 +626,10 @@ function get_experiment_stats(handle::DBHandle; days::Int=7)
     
     row = result[1, :]
     return (
-        total = row.total,
-        completed = row.completed,
-        failed = row.failed,
-        running = row.running,
+        total = coalesce(row.total, 0),
+        completed = coalesce(row.completed, 0),
+        failed = coalesce(row.failed, 0),
+        running = coalesce(row.running, 0),
         avg_duration_seconds = row.avg_duration_seconds
     )
 end

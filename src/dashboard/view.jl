@@ -61,7 +61,7 @@ function _render_tab_bar!(m::ProgressDashboard, area::Rect, buf)
             [Span("2", tstyle(:accent)), Span(" Stats", tstyle(:text))],
             [Span("3", tstyle(:accent)), Span(" Admin", tstyle(:text))],
         ]
-        active_idx = m.active_tab - 1  # Adjust for skipped tab
+        active_idx = max(1, m.active_tab - 1)  # Adjust for skipped tab, ensure at least 1
     end
     
     render(TabBar(labels; active = active_idx), area, buf)

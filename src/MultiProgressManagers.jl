@@ -14,8 +14,8 @@ include("distributed.jl")
 include("dashboard/model.jl")
 include("dashboard/view.jl")
 include("dashboard/update.jl")
+include("dashboard/running_tab.jl")  # Include first for helper functions
 include("dashboard/select_tab.jl")
-include("dashboard/running_tab.jl")
 include("dashboard/stats_tab.jl")
 include("dashboard/admin_tab.jl")
 
