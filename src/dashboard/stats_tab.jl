@@ -51,8 +51,8 @@ function _view_stats_tab!(m::ProgressDashboard, area::Rect, buf)
     )
     stats_area = render(stats_block, rows[2], buf)
     
-    # Refresh stats if needed
-    if time() - m.last_stats_refresh > 30  # Refresh every 30 seconds
+    # Refresh stats if needed (first load or every 30 seconds)
+    if m.total_stats === nothing || (time() - m.last_stats_refresh > 30)
         m.total_stats = Database.get_experiment_stats(m.db_handle, days=7)
         m.last_stats_refresh = time()
     end
@@ -71,22 +71,28 @@ function _view_stats_tab!(m::ProgressDashboard, area::Rect, buf)
         col2_x = x + 25
         col3_x = x + 50
         
+        # Handle missing values gracefully - convert to 0 for display
+        total = coalesce(stats.total, 0)
+        completed = coalesce(stats.completed, 0)
+        failed = coalesce(stats.failed, 0)
+        running = coalesce(stats.running, 0)
+        
         # Row 1
-        set_string!(buf, col1_x, y, "Total: $(stats.total)", tstyle(:text); max_x = right(stats_area))
-        set_string!(buf, col2_x, y, "Completed: $(stats.completed)", tstyle(:success); max_x = right(stats_area))
-        set_string!(buf, col3_x, y, "Failed: $(stats.failed)", tstyle(:error); max_x = right(stats_area))
+        set_string!(buf, col1_x, y, "Total: $(total)", tstyle(:text); max_x = right(stats_area))
+        set_string!(buf, col2_x, y, "Completed: $(completed)", tstyle(:success); max_x = right(stats_area))
+        set_string!(buf, col3_x, y, "Failed: $(failed)", tstyle(:error); max_x = right(stats_area))
         y += 2
         
         # Row 2
-        set_string!(buf, col1_x, y, "Running: $(stats.running)", tstyle(:warning); max_x = right(stats_area))
+        set_string!(buf, col1_x, y, "Running: $(running)", tstyle(:warning); max_x = right(stats_area))
         
         if stats.avg_duration_seconds !== nothing
             avg_dur = @sprintf("%.1f", stats.avg_duration_seconds / 60)
             set_string!(buf, col2_x, y, "Avg Duration: $(avg_dur) min", tstyle(:text); max_x = right(stats_area))
         end
         
-        if stats.total > 0
-            success_rate = @sprintf("%.1f", 100 * stats.completed / stats.total)
+        if total > 0
+            success_rate = @sprintf("%.1f", 100 * completed / total)
             set_string!(buf, col3_x, y, "Success Rate: $(success_rate)%", tstyle(:accent); max_x = right(stats_area))
         end
         y += 2

@@ -21,7 +21,7 @@ function _view_select_tab!(m::ProgressDashboard, area::Rect, buf)
         # Try to get experiment count
         try
             count = nrow(Database.get_all_experiments(m.db_handle, limit=1000))
-            "$name ($count runs)"
+            "$name ($(count) runs)"
         catch
             name
         end
@@ -64,13 +64,20 @@ function _render_db_preview!(m::ProgressDashboard, db_path::String, area::Rect, 
         
         set_string!(buf, x, y, "Last 7 days:", tstyle(:accent, bold = true); max_x = right(area))
         y += 1
-        set_string!(buf, x, y, "  Total: $(stats.total)", tstyle(:text); max_x = right(area))
+        
+        # Handle missing values gracefully
+        total = coalesce(stats.total, 0)
+        completed = coalesce(stats.completed, 0)
+        failed = coalesce(stats.failed, 0)
+        running_count = coalesce(stats.running, 0)
+        
+        set_string!(buf, x, y, "  Total: $(total)", tstyle(:text); max_x = right(area))
         y += 1
-        set_string!(buf, x, y, "  Completed: $(stats.completed)", tstyle(:success); max_x = right(area))
+        set_string!(buf, x, y, "  Completed: $(completed)", tstyle(:success); max_x = right(area))
         y += 1
-        set_string!(buf, x, y, "  Failed: $(stats.failed)", tstyle(:error); max_x = right(area))
+        set_string!(buf, x, y, "  Failed: $(failed)", tstyle(:error); max_x = right(area))
         y += 1
-        set_string!(buf, x, y, "  Running: $(stats.running)", tstyle(:warning); max_x = right(area))
+        set_string!(buf, x, y, "  Running: $(running_count)", tstyle(:warning); max_x = right(area))
         y += 2
         
         if !isempty(running)
