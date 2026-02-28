@@ -55,11 +55,11 @@ function create_progress_manager(name::String, total_steps::Int;
     # Ensure directory exists
     mkpath(dirname(db_path))
     
-    # Initialize database
-    Database.init_db!(db_path)
+    # Initialize database and get handle
+    db_handle = Database.init_db!(db_path)
     
     # Create experiment record
-    experiment_id = Database.create_experiment(name, total_steps;
+    experiment_id = Database.create_experiment(db_handle, name, total_steps;
                                                description=description,
                                                worker_count=worker_count)
     
@@ -70,6 +70,10 @@ function create_progress_manager(name::String, total_steps::Int;
                              worker_channel=worker_channel,
                              update_frequency_ms=update_frequency_ms,
                              speed_window_seconds=speed_window_seconds)
+    
+    # Store handle in task local storage for this task
+    tls = task_local_storage()
+    tls[:mpm_db_handle] = db_handle
     
     # Print helpful message about dashboard
     @info """
@@ -109,7 +113,14 @@ function update!(manager::ProgressManager, current_step::Int; info::String="")
     
     # Throttle database writes
     if (current_time - manager.last_update_time) * 1000 >= manager.update_frequency_ms
-        Database.record_progress!(manager.experiment_id, current_step, elapsed)
+        # Get or create handle
+        tls = task_local_storage()
+        if !haskey(tls, :mpm_db_handle)
+            tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
+        end
+        db_handle = tls[:mpm_db_handle]
+        
+        Database.record_progress!(db_handle, manager.experiment_id, current_step, elapsed)
         manager.last_update_time = current_time
     end
     
@@ -131,11 +142,19 @@ function finish!(manager::ProgressManager; message::String="Completed successful
     # Record final progress
     update!(manager, manager.total_steps; info=message)
     
-    # Mark as finished
-    Database.finish_experiment!(manager.experiment_id; message=message)
+    # Get handle
+    tls = task_local_storage()
+    if !haskey(tls, :mpm_db_handle)
+        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
+    end
+    db_handle = tls[:mpm_db_handle]
     
-    # Close database connection
-    Database.close_db!()
+    # Mark as finished
+    Database.finish_experiment!(db_handle, manager.experiment_id; message=message)
+    
+    # Close handle
+    Database.close_db!(db_handle)
+    delete!(tls, :mpm_db_handle)
     
     @info "Experiment completed: $message"
     
@@ -155,9 +174,18 @@ Mark the experiment as failed.
 function fail!(manager::ProgressManager, error::Exception; message::Union{String,Nothing}=nothing)
     error_msg = message !== nothing ? message : sprint(showerror, error)
     
-    Database.fail_experiment!(manager.experiment_id, error_msg)
+    # Get handle
+    tls = task_local_storage()
+    if !haskey(tls, :mpm_db_handle)
+        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
+    end
+    db_handle = tls[:mpm_db_handle]
     
-    Database.close_db!()
+    Database.fail_experiment!(db_handle, manager.experiment_id, error_msg)
+    
+    # Close handle
+    Database.close_db!(db_handle)
+    delete!(tls, :mpm_db_handle)
     
     @error "Experiment failed: $error_msg"
     
@@ -170,9 +198,18 @@ end
 Mark the experiment as failed with a message.
 """
 function fail!(manager::ProgressManager, error_message::String)
-    Database.fail_experiment!(manager.experiment_id, error_message)
+    # Get handle
+    tls = task_local_storage()
+    if !haskey(tls, :mpm_db_handle)
+        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
+    end
+    db_handle = tls[:mpm_db_handle]
     
-    Database.close_db!()
+    Database.fail_experiment!(db_handle, manager.experiment_id, error_message)
+    
+    # Close handle
+    Database.close_db!(db_handle)
+    delete!(tls, :mpm_db_handle)
     
     @error "Experiment failed: $error_message"
     
@@ -217,6 +254,13 @@ Get current speed metrics.
 Returns (total_avg_speed, short_avg_speed) in steps per second.
 """
 function get_speeds(manager::ProgressManager)
-    return Database.calculate_speeds(manager.experiment_id; 
+    # Get handle
+    tls = task_local_storage()
+    if !haskey(tls, :mpm_db_handle)
+        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
+    end
+    db_handle = tls[:mpm_db_handle]
+    
+    return Database.calculate_speeds(db_handle, manager.experiment_id; 
                                     window_seconds=manager.speed_window_seconds)
 end

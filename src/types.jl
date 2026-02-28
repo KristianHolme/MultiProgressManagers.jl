@@ -19,13 +19,6 @@ mutable struct ProgressManager
                             worker_channel=nothing,
                             update_frequency_ms::Int=100,
                             speed_window_seconds::Real=30)
-        # Ensure database is initialized
-        if !isfile(db_path)
-            Database.init_db!(db_path)
-        else
-            Database.init_db!(db_path)  # Re-init to ensure connection
-        end
-        
         new(experiment_id, db_path, total_steps, time(), time(), 0,
             worker_channel, update_frequency_ms, speed_window_seconds)
     end

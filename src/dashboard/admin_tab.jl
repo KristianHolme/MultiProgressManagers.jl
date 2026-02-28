@@ -228,6 +228,3 @@ function _word_wrap(text::String, width::Int)::Vector{String}
     
     return lines
 end
-
-# Helper to match status to style
-@match = Match

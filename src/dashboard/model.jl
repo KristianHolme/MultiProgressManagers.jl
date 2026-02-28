@@ -4,8 +4,16 @@ Dashboard model and types for Tachikoma-based MultiProgressManagers UI.
 
 using Tachikoma
 using Dates
+using Match
+using Dates
 
 import Tachikoma: TabBar, SelectableList, ListItem, Table, Gauge, Sparkline, 
+                  BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
+                  render_resize_handles!, handle_resize!, DataTable, DataColumn,
+                  ProgressList, ProgressItem, Block, Paragraph, StatusBar,
+                  tstyle, BOX_HEAVY
+
+const tsplit = Tachikoma.split
                   BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
                   render_resize_handles!, handle_resize!, DataTable, DataColumn,
                   ProgressList, ProgressItem, Block, Paragraph, StatusBar,
