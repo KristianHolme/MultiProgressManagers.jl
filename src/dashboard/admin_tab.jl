@@ -21,21 +21,27 @@ function _view_admin_tab!(m::ProgressDashboard, area::Rect, buf)
     else
         # Build list items with status indicators
         items = map(m.admin_experiments) do exp
-            status_char = @match exp.status begin
+            # Handle missing status
+            status = ismissing(exp.status) ? :unknown : exp.status
+            
+            status_char = @match status begin
                 :running => "●"
                 :completed => "✓"
                 :failed => "✗"
                 _ => "○"
             end
             
-            status_style = @match exp.status begin
+            status_style = @match status begin
                 :running => :warning
                 :completed => :success
                 :failed => :error
                 _ => :text_dim
             end
             
-            "$status_char $(exp.name)"
+            # Handle missing name
+            name = ismissing(exp.name) ? "Unknown" : exp.name
+            
+            "$status_char $(name)"
         end
         
         list = SelectableList(items; selected = m.admin_selected)
@@ -81,18 +87,26 @@ function _render_experiment_edit!(m::ProgressDashboard, exp::ExperimentAdminView
     x = area.x
     max_x = right(area)
     
+    # Handle missing values
+    name = ismissing(exp.name) ? "Unknown" : exp.name
+    description = ismissing(exp.description) ? "" : exp.description
+    status = ismissing(exp.status) ? :unknown : exp.status
+    current_step = ismissing(exp.current_step) ? 0 : exp.current_step
+    total_steps = ismissing(exp.total_steps) ? 0 : exp.total_steps
+    final_message = ismissing(exp.final_message) ? "" : exp.final_message
+    
     # Header
-    set_string!(buf, x, y, exp.name, tstyle(:accent, bold = true); max_x = max_x)
+    set_string!(buf, x, y, name, tstyle(:accent, bold = true); max_x = max_x)
     y += 1
     
-    if !isempty(exp.description)
-        set_string!(buf, x, y, exp.description, tstyle(:text_dim); max_x = max_x)
+    if !isempty(description)
+        set_string!(buf, x, y, description, tstyle(:text_dim); max_x = max_x)
         y += 1
     end
     y += 1
     
     # Status with color
-    status_style = @match exp.status begin
+    status_style = @match status begin
         :running => tstyle(:warning)
         :completed => tstyle(:success)
         :failed => tstyle(:error)
@@ -100,12 +114,12 @@ function _render_experiment_edit!(m::ProgressDashboard, exp::ExperimentAdminView
     end
     
     set_string!(buf, x, y, "Status: ", tstyle(:text); max_x = max_x)
-    set_string!(buf, x + 8, y, string(exp.status), status_style; max_x = max_x)
+    set_string!(buf, x + 8, y, string(status), status_style; max_x = max_x)
     y += 1
     
     # Progress
-    progress_pct = exp.total_steps > 0 ? 100 * exp.current_step / exp.total_steps : 0
-    set_string!(buf, x, y, "Progress: $(exp.current_step) / $(exp.total_steps) ($(sprintf("%.1f%%", progress_pct)))", 
+    progress_pct = total_steps > 0 ? 100 * current_step / total_steps : 0
+    set_string!(buf, x, y, "Progress: $(current_step) / $(total_steps) ($(sprintf("%.1f%%", progress_pct)))", 
                tstyle(:text); max_x = max_x)
     y += 1
     
@@ -121,11 +135,11 @@ function _render_experiment_edit!(m::ProgressDashboard, exp::ExperimentAdminView
     y += 1
     
     # Message
-    if !isempty(exp.final_message)
+    if !isempty(final_message)
         set_string!(buf, x, y, "Message:", tstyle(:accent); max_x = max_x)
         y += 1
         # Word wrap message
-        msg_lines = _word_wrap(exp.final_message, area.width - 2)
+        msg_lines = _word_wrap(final_message, area.width - 2)
         for line in msg_lines[1:min(3, length(msg_lines))]
             if y > bottom(area) - 2
                 break

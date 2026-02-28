@@ -93,7 +93,8 @@ function _render_db_preview!(m::ProgressDashboard, db_path::String, area::Rect, 
             y += 1
             num_running = nrow(running)
             for exp in running[1:min(3, num_running), :]
-                set_string!(buf, x, y, "  • $(exp.name)", tstyle(:text); max_x = right(area))
+                name = ismissing(exp.name) ? "Unknown" : exp.name
+                set_string!(buf, x, y, "  • $(name)", tstyle(:text); max_x = right(area))
                 y += 1
             end
             if num_running > 3

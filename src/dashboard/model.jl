@@ -18,27 +18,27 @@ const tsplit = Tachikoma.split
 # === View Types ===
 
 @kwdef struct ExperimentSummary
-    id::String
-    name::String
-    progress_pct::Float64
-    status::Symbol
+    id::Union{String,Missing}
+    name::Union{String,Missing}
+    progress_pct::Union{Float64,Missing}
+    status::Union{Symbol,Missing}
     started_at::Union{DateTime,Missing}
-    total_avg_speed::Float64
-    short_avg_speed::Float64
-    eta_seconds::Union{Float64,Nothing}
+    total_avg_speed::Union{Float64,Missing}
+    short_avg_speed::Union{Float64,Missing}
+    eta_seconds::Union{Float64,Nothing,Missing}
     sparkline::Vector{Float64}
 end
 
 @kwdef struct ExperimentAdminView
-    id::String
-    name::String
-    description::String
-    total_steps::Int
-    current_step::Int
-    status::Symbol
+    id::Union{String,Missing}
+    name::Union{String,Missing}
+    description::Union{String,Missing}
+    total_steps::Union{Int,Missing}
+    current_step::Union{Int,Missing}
+    status::Union{Symbol,Missing}
     started_at::Union{DateTime,Missing}
     finished_at::Union{DateTime,Nothing,Missing}
-    final_message::String
+    final_message::Union{String,Missing}
 end
 
 # === Dashboard Model ===
@@ -208,10 +208,10 @@ function _poll_database!(m::ProgressDashboard)
         end
         
         ExperimentSummary(
-            id = exp.id,
-            name = exp.name,
-            progress_pct = exp.progress_pct,
-            status = Symbol(exp.status),
+            id = ismissing(exp.id) ? "" : exp.id,
+            name = ismissing(exp.name) ? "Unknown" : exp.name,
+            progress_pct = ismissing(exp.progress_pct) ? 0.0 : exp.progress_pct,
+            status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
             started_at = exp.started_at,
             total_avg_speed = speeds.total_avg_speed,
             short_avg_speed = speeds.short_avg_speed,
@@ -224,15 +224,15 @@ function _poll_database!(m::ProgressDashboard)
     all_exps = Database.get_all_experiments(m.db_handle; limit=100)
     m.admin_experiments = map(eachrow(all_exps)) do exp
         ExperimentAdminView(
-            id = exp.id,
-            name = exp.name,
-            description = exp.description,
-            total_steps = exp.total_steps,
-            current_step = exp.current_step,
-            status = Symbol(exp.status),
+            id = ismissing(exp.id) ? "" : exp.id,
+            name = ismissing(exp.name) ? "Unknown" : exp.name,
+            description = ismissing(exp.description) ? "" : exp.description,
+            total_steps = ismissing(exp.total_steps) ? 0 : exp.total_steps,
+            current_step = ismissing(exp.current_step) ? 0 : exp.current_step,
+            status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
             started_at = exp.started_at,
             finished_at = exp.finished_at,
-            final_message = exp.final_message
+            final_message = ismissing(exp.final_message) ? "" : exp.final_message
         )
     end
     

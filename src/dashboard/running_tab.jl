@@ -35,9 +35,11 @@ function _view_running_tab!(m::ProgressDashboard, area::Rect, buf)
         ]
         
         data = map(m.running_experiments) do exp
+            name = ismissing(exp.name) ? "Unknown" : exp.name
+            progress = ismissing(exp.progress_pct) ? 0.0 : exp.progress_pct
             [
-                exp.name,
-                @sprintf("%.1f%%", exp.progress_pct),
+                name,
+                @sprintf("%.1f%%", progress),
                 format_eta(exp.eta_seconds),
                 format_speed(exp.short_avg_speed),
                 format_speed(exp.total_avg_speed),
@@ -90,21 +92,26 @@ function _view_running_tab!(m::ProgressDashboard, area::Rect, buf)
 end
 
 function _render_experiment_detail!(m::ProgressDashboard, exp::ExperimentSummary, area::Rect, buf)
+    # Handle missing values
+    name = ismissing(exp.name) ? "Unknown" : exp.name
+    status = ismissing(exp.status) ? :unknown : exp.status
+    progress_pct = ismissing(exp.progress_pct) ? 0.0 : exp.progress_pct
+    
     y = area.y
     x = area.x
     max_x = right(area)
     
     # Name and status
-    status_style = @match exp.status begin
+    status_style = @match status begin
         :running => tstyle(:warning)
         :completed => tstyle(:success)
         :failed => tstyle(:error)
         _ => tstyle(:text)
     end
     
-    set_string!(buf, x, y, exp.name, tstyle(:accent, bold = true); max_x = max_x)
+    set_string!(buf, x, y, name, tstyle(:accent, bold = true); max_x = max_x)
     y += 1
-    set_string!(buf, x, y, "Status: $(string(exp.status))", status_style; max_x = max_x)
+    set_string!(buf, x, y, "Status: $(string(status))", status_style; max_x = max_x)
     y += 2
     
     # Progress bar (gauge)
@@ -113,7 +120,7 @@ function _render_experiment_detail!(m::ProgressDashboard, exp::ExperimentSummary
     if y + gauge_height <= bottom(area)
         gauge = Gauge(
             label = "Progress",
-            value = exp.progress_pct / 100,
+            value = progress_pct / 100,
             show_percentage = true
         )
         render(gauge, Rect(x, y, area.width, gauge_height), buf)

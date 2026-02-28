@@ -126,9 +126,9 @@ function _enter_edit_mode!(m::ProgressDashboard)
     
     # Initialize edit input based on selected field
     initial_text = @match m.admin_edit_field begin
-        1 => string(exp.status)
-        2 => string(exp.current_step)
-        3 => exp.final_message
+        1 => ismissing(exp.status) ? "unknown" : string(exp.status)
+        2 => ismissing(exp.current_step) ? "0" : string(exp.current_step)
+        3 => ismissing(exp.final_message) ? "" : exp.final_message
         _ => ""
     end
     
@@ -169,13 +169,19 @@ function _save_admin_edit!(m::ProgressDashboard)
     
     value = Tachikoma.text(input)
     
+    # Get experiment ID (handle missing)
+    exp_id = ismissing(exp.id) ? "" : exp.id
+    
     @match m.admin_edit_field begin
-        1 => Database.update_experiment_status!(m.db_handle, exp.id, value)
+        1 => Database.update_experiment_status!(m.db_handle, exp_id, value)
         2 => begin
             new_step = parse(Int, value)
-            Database.update_experiment_steps!(m.db_handle, exp.id, new_step)
+            Database.update_experiment_steps!(m.db_handle, exp_id, new_step)
         end
-        3 => Database.update_experiment_status!(m.db_handle, exp.id, string(exp.status); message=value)
+        3 => begin
+            status = ismissing(exp.status) ? "unknown" : string(exp.status)
+            Database.update_experiment_status!(m.db_handle, exp_id, status; message=value)
+        end
         _ => nothing
     end
 end
@@ -188,10 +194,13 @@ function _handle_confirm_modal!(m::ProgressDashboard, evt::KeyEvent)
         
         exp = m.admin_experiments[m.admin_selected]
         
+        # Get experiment ID (handle missing)
+        exp_id = ismissing(exp.id) ? "" : exp.id
+        
         @match m.admin_confirm_action begin
-            :complete => Database.update_experiment_status!(m.db_handle, exp.id, "completed")
-            :reset => Database.update_experiment_status!(m.db_handle, exp.id, "running")
-            :delete => _delete_experiment!(m, exp.id)
+            :complete => Database.update_experiment_status!(m.db_handle, exp_id, "completed")
+            :reset => Database.update_experiment_status!(m.db_handle, exp_id, "running")
+            :delete => _delete_experiment!(m, exp_id)
             _ => nothing
         end
         
