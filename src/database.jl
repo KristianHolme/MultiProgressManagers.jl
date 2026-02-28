@@ -25,12 +25,18 @@ Creates all necessary tables and indexes.
 """
 function init_db!(db_path::String)
     mkpath(dirname(db_path))
+    
+    # Close any existing connection first
+    if DB[] !== nothing
+        try
+            SQLite.close(DB[])
+        catch
+        end
+        DB[] = nothing
+    end
+    
     db = SQLite.DB(db_path)
     DB[] = db
-    
-    # Enable WAL mode for better concurrent write performance
-    DBInterface.execute(db, "PRAGMA journal_mode=WAL")
-    DBInterface.execute(db, "PRAGMA synchronous=NORMAL")
     
     # === Experiments Table ===
     # Master record for each progress tracking session
@@ -93,11 +99,6 @@ function init_db!(db_path::String)
     DBInterface.execute(db, """
         CREATE INDEX IF NOT EXISTS idx_snapshots_exp_time_recent 
         ON progress_snapshots(experiment_id, timestamp)
-    """)
-    DBInterface.execute(db, """
-        CREATE INDEX IF NOT EXISTS idx_snapshots_exp_time_recent 
-        ON progress_snapshots(experiment_id, timestamp)
-        WHERE timestamp > datetime('now', '-1 hour')
     """)
     
     # Fast status filtering

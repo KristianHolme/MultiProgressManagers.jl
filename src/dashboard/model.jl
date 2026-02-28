@@ -8,6 +8,10 @@ using Dates
 import Tachikoma: TabBar, SelectableList, ListItem, Table, Gauge, Sparkline, 
                   BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
                   render_resize_handles!, handle_resize!, DataTable, DataColumn,
+                  ProgressList, ProgressItem, Block, Paragraph, StatusBar,
+                  tstyle, BOX_HEAVY
+                  BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
+                  render_resize_handles!, handle_resize!, DataTable, DataColumn,
                   ProgressList, ProgressItem, Block, Paragraph
 
 const tsplit = Tachikoma.split

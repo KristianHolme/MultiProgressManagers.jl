@@ -4,26 +4,25 @@ version = "0.1.0"
 authors = ["Kristian Holme <holme.kristian@gmail.com>"]
 
 [deps]
+DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SQLite = "0aa819cd-b072-5ff4-a722-6bc24af294d9"
+Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
 
 [weakdeps]
 Drill = "49b37b9d-a8e6-4364-9144-4677bcb8a7f0"
-Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 
 [extensions]
 MultiProgressManagersDrillExt = "Drill"
-MultiProgressManagersDashboardExt = "Tachikoma"
 
 [compat]
-DataFrames = "1.7.0"
 DBInterface = "2.6.0"
+DataFrames = "1.7.0"
 Distributed = "1.11.0"
 JSON3 = "1.14.0"
 SQLite = "1.6.0"
@@ -32,12 +31,8 @@ julia = "1.12.0"
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
+[metadata]
+branch = "tachikoma-rewrite"
+
 [targets]
 test = ["Test"]
-
-[metadata]
-# This package replaces the old ProgressMeter-based implementation
-# with a custom Tachikoma.jl dashboard and SQLite persistence
-# Dashboard features require Tachikoma.jl to be installed separately:
-#   ] dev ./dev/Tachikoma
-branch = "tachikoma-rewrite"
