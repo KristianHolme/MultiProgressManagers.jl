@@ -165,7 +165,7 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
     Tachikoma.app(model; fps=60)
     
     # Cleanup
-    Database.close!(m.db_handle)
+    Database.close!(db_handle)
 end
 
 """
@@ -192,7 +192,7 @@ function _poll_database!(m::ProgressDashboard)
     # Refresh running experiments
     experiments = Database.get_running_experiments(m.db_handle)
     
-    m.running_experiments = map(experiments) do exp
+    m.running_experiments = map(eachrow(experiments)) do exp
         speeds = Database.calculate_speeds(m.db_handle, exp.id; window_seconds=m.speed_window_seconds)
         sparkline = Database.get_recent_speeds(m.db_handle, exp.id; n=20, window_seconds=60)
         
@@ -208,7 +208,7 @@ function _poll_database!(m::ProgressDashboard)
             id = exp.id,
             name = exp.name,
             progress_pct = exp.progress_pct,
-            status = exp.status,
+            status = Symbol(exp.status),
             started_at = exp.started_at,
             total_avg_speed = speeds.total_avg_speed,
             short_avg_speed = speeds.short_avg_speed,
@@ -219,14 +219,14 @@ function _poll_database!(m::ProgressDashboard)
     
     # Refresh admin list (all experiments)
     all_exps = Database.get_all_experiments(m.db_handle; limit=100)
-    m.admin_experiments = map(all_exps) do exp
+    m.admin_experiments = map(eachrow(all_exps)) do exp
         ExperimentAdminView(
             id = exp.id,
             name = exp.name,
             description = exp.description,
             total_steps = exp.total_steps,
             current_step = exp.current_step,
-            status = exp.status,
+            status = Symbol(exp.status),
             started_at = exp.started_at,
             finished_at = exp.finished_at,
             final_message = exp.final_message
