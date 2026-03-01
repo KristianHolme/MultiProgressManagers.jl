@@ -1,104 +1,281 @@
 # MultiProgressManagers.jl
 
-Utilities for coordinating multiple [`ProgressMeter.jl`](https://github.com/timholy/ProgressMeter.jl) progress bars across distributed Julia workers.
+A lightweight progress tracking system for Julia with a Tachikoma.jl-based dashboard and SQLite persistence.
+
+> **Note**: This is version 0.1.0, a simplified rewrite focused on multi-task experiment tracking. If you need the old ProgressMeter-based implementation, use version 0.0.x.
+
+## Features
+
+- **📊 Tachikoma Dashboard**: Clean 2-tab terminal UI for monitoring experiments
+- **💾 SQLite Persistence**: Current state stored in SQLite (no history for MWP)
+- **🔄 Multi-Task Support**: Track parallel sub-tasks within a single experiment
+- **⚡ Simple API**: In-process: `update!`, `finish_task!`. Workers: `ProgressTask` + `report_progress!`, `finish!`
+- **🔀 Distributed & Threads**: Single DB writer on the master; workers get a `ProgressTask` via `get_task(manager, id, :remote)` or `:local` and send updates over a channel
 
 ## Installation
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/KristianHolme/MultiProgressManagers.jl")
+Pkg.add("MultiProgressManagers")
 ```
 
-The core type, `MultiProgressManager`, owns the shared `Progress` meters and the `RemoteChannel`s that workers use to publish status updates. Helper functions spawn housekeeping tasks that keep the aggregate meters responsive without blocking your workloads.
+## Quick Start
 
-## Key Concepts
-
-- `MultiProgressManager(n_jobs; io=stderr, tty=nothing)` creates the top-level meter plus per-worker bookkeeping. 
-- Workers communicate via `ProgressMessage`s: `ProgressStart`, `ProgressStepUpdate`, `ProgressFinished`, and `ProgressStop`.
-- `create_main_meter_task(manager)` returns a pair of housekeeping tasks; `create_worker_meter_task(manager)` returns the listener task that processes worker messages.
-- `stop!(manager, tasks...)` closes channels and waits for the spawned tasks to finish cleanly.
-
-### Full example
+### Basic Usage (same process)
 
 ```julia
-using Distributed
+using MultiProgressManagers
 
-tty = 8 #because the tty command  in my desired output terminal outputs /dev/pts/8
-addprocs(4)
-@everywhere using MultiProgressManagers
-@everywhere function do_work(i::Int, worker_channel::RemoteChannel)
-    put!(worker_channel, ProgressStart(myid(), 10, "Worker $(myid())"))
-    for j in 1:10
-        work_time = rand()*i*0.2
-        sleep(work_time)
-        put!(worker_channel, ProgressStepUpdate(myid(), 1, "Work time: $work_time"))
-        if rand() < 0.05
-            error("Error in worker $i")
-        end
+# Create a multi-task experiment with 5 parallel tasks
+manager = ProgressManager("Training Run", 5;
+                         description = "Epoch 1-10 of ResNet training",
+                         db_path = "./progresslogs/experiment1.db")
+
+# Update progress for each task as it runs
+for task_num in 1:5
+    for step in 1:100
+        do_work(task_num, step)
+        update!(manager, task_num, step; total_steps = 100, message = "step $step")
     end
-    put!(worker_channel, ProgressFinished(myid(), "Finished work!"))
-    return nothing
+    finish_task!(manager, task_num)
 end
 
-n_jobs = 20
-manager = MultiProgressManager(n_jobs, tty)
-t_periodic, t_update = create_main_meter_tasks(manager)
-t_worker = create_worker_meter_task(manager)
-
-configs = [(i, manager.main_channel, manager.worker_channel) for i in 1:n_jobs]
-results = pmap(configs, on_error = e -> 0) do (i, main_channel, worker_channel)
-    do_work(i, worker_channel)
-    put!(main_channel, true)
-    return 1
-end
-
-stop!(manager, t_periodic, t_update, t_worker)
-
-successes = sum(results)
-fails = length(results) - successes
-@info "Successes: $successes, Fails: $fails"
+# Mark entire experiment as complete
+finish_experiment!(manager)
 ```
 
-### Terminal Snapshot
+### Worker-based progress (threads or Distributed)
 
-```
-Total Progress:  47%|██████████▎           |  ETA: 0:01:53 (14.10  s/it)
-   Jobs: 7 / 15
-Worker 2 100%|█████████████████████████████| Time: 0:01:13 (11.97 ms/it)
-   6144 / 6144: Evaluating...
-Worker 3 100%|█████████████████████████████| Time: 0:00:07 ( 1.24 ms/it)
-   6144 / 6144: Evaluating...
-Worker 4   2%|▌                            |  ETA: 0:00:30 ( 5.42 ms/it)
-   96 / 5552:
-Worker 5   2%|▌                            |  ETA: 0:01:03 (11.61 ms/it)
-   96 / 5552:
-Worker 6  31%|█████████                    |  ETA: 0:00:11 ( 2.52 ms/it)
-   1904 / 6144:
-Worker 7  41%|███████████▊                 |  ETA: 0:01:50 (33.31 ms/it)
-   2256 / 5552:
-Worker 8  41%|████████████                 |  ETA: 0:01:57 (35.80 ms/it)
-   2288 / 5552:
-Worker 9   2%|▌                            |  ETA: 0:00:59 (10.84 ms/it)
-   96 / 5552:
-Worker 10 100%|████████████████████████████| Time: 0:01:10 (11.43 ms/it)
-   6144 / 6144: Evaluating...
-```
-
-
-## DRiL Integration
-
-An optional extension (`MultiProgressManagersDRiLExt`) defines `DRiLWorkerProgressCallback`, which plugs into the [`DRiL`](https://github.com/KristianHolme/DRiL.jl) RL training loop. It uses `ProgressStart`, `ProgressStepUpdate`, and `ProgressFinished` messages that mirror the training lifecycle across parallel environments.
-
-Enable the extension by loading DRiL alongside this package, then do something like:
+When work runs on other threads or processes, only the master touches the DB. Workers get a **ProgressTask** and send updates over a channel:
 
 ```julia
-using DRiL
+using MultiProgressManagers
+using Distributed  # for pmap
 
-n_jobs = 42
-manager = MultiProgressManager(n_jobs)
-t_periodic, t_update = create_main_meter_tasks(manager)
-t_worker = create_worker_meter_task(manager)
+@everywhere using MultiProgressManagers
 
-callback = create_dril_callback(manager.worker_channel)
+# Master: create experiment and get task handles
+manager = ProgressManager("Distributed Run", 8; db_path = "./progresslogs/dist.db")
+tasks = [get_task(manager, i, :remote) for i in 1:8]  # :local for @spawn threads
+
+# Workers: report progress via the task handle (no DB access)
+@everywhere function run_worker(task::ProgressTask, total_steps::Int)
+    for step in 1:total_steps
+        do_work(step)
+        report_progress!(task, step; total_steps = total_steps, message = "step $step")
+    end
+    finish!(task)
+end
+
+# Run and finish
+pmap(i -> run_worker(tasks[i], 100), 1:8)
+finish_experiment!(manager)
 ```
 
+See `examples/multithreading.jl` (threads + direct `update!`) and `examples/distributed_pmap.jl` (Distributed + `ProgressTask`).
+
+### Viewing the Dashboard
+
+```bash
+# From shell:
+mpm ./progresslogs/experiment1.db
+
+# Or from Julia:
+using MultiProgressManagers
+view_dashboard("./progresslogs/experiment1.db")
+```
+
+## Dashboard Tabs
+
+### Tab 1: Runs
+Shows all experiments in the database:
+- Experiment name and description
+- Status (running/completed/failed)
+- Overall progress across all tasks
+- Start time and duration
+
+### Tab 2: Details (Running)
+Shows detailed view of selected experiment:
+- Individual task progress bars
+- Task status (pending/running/completed/failed)
+- Current step / total steps for each task
+- **Message** column (from `update!(...; message=...)` or `report_progress!(...; message=...)`)
+- Speed calculation (steps per second)
+
+## API Reference
+
+### Creating an Experiment
+
+```julia
+ProgressManager(name::String, num_tasks::Int;
+                description::String = "",
+                db_path::String = "./progresslogs/experiment.db")
+# or
+create_experiment(name::String, total_tasks::Int;
+                  description::String = "",
+                  db_path::String) -> ProgressManager
+```
+
+**Parameters:**
+- `name`: Human-readable experiment name (shown in dashboard)
+- `num_tasks` / `total_tasks`: Number of parallel sub-tasks in this experiment
+- `description`: Optional longer description
+- `db_path`: Path to SQLite database file
+
+**Returns:** A `ProgressManager` instance for tracking this experiment.
+
+### Updating Task Progress (in-process)
+
+```julia
+update!(manager::ProgressManager, task_number::Int, current_step::Int;
+        total_steps::Int = 0,
+        message::String = "")
+```
+
+Records progress for a specific task. Optionally pass `total_steps` and `message`; the message is shown in the dashboard Details tab. Automatically marks task as "completed" when `current_step` reaches the task's total steps.
+
+**Parameters:**
+- `manager`: The ProgressManager for this experiment
+- `task_number`: 1-indexed task number (1 to total_tasks)
+- `current_step`: Current progress step for this task
+- `total_steps`: Optional; used for progress display
+- `message`: Optional; shown in the "Message" column (e.g. phase or status)
+
+### ProgressTask: worker-based updates
+
+When work runs on other threads or processes, workers must not call `update!` or touch the DB. Instead they use a **ProgressTask**:
+
+```julia
+get_task(manager::ProgressManager, task_number::Int, type = :local) -> ProgressTask
+```
+
+Returns a handle for one task. `type`:
+- `:local` — plain `Channel` (same process, e.g. `@spawn`)
+- `:remote` — `RemoteChannel` (for `Distributed` / `pmap`)
+
+```julia
+report_progress!(task::ProgressTask, current_step::Int; total_steps::Int = 0, message::String = "")
+finish!(task::ProgressTask)
+```
+
+Workers call `report_progress!` during the loop and `finish!(task)` when the task is done. A listener on the master process applies these to the DB.
+
+### Finishing a Task (in-process)
+
+```julia
+finish_task!(manager::ProgressManager, task_number::Int)
+```
+
+Explicitly mark a task as completed. Use this when you call `update!` from the same process. For workers, use `finish!(task)` on the ProgressTask instead.
+
+### Finishing an Experiment
+
+```julia
+finish_experiment!(manager::ProgressManager)
+```
+
+Mark the entire experiment as completed. This sets the experiment status to "completed" and marks all remaining tasks as done.
+
+### Failing a Task
+
+```julia
+fail_task!(manager::ProgressManager, task_number::Int, error_message::String)
+```
+
+Mark a specific task as failed with an error message.
+
+## Database Schema
+
+The SQLite database uses a simplified 2-table schema:
+
+### experiments table
+- `id`: UUID primary key
+- `name`: Experiment name
+- `description`: Optional description
+- `total_tasks`: Number of sub-tasks
+- `status`: running, completed, or failed
+- `started_at`: Unix timestamp when experiment started
+- `finished_at`: Unix timestamp when experiment completed (NULL if running)
+- `final_message`: Optional message (e.g. "Completed successfully" or error)
+
+### tasks table
+- `id`: UUID primary key
+- `experiment_id`: Foreign key to experiments table
+- `task_number`: 1-indexed position in task list
+- `total_steps`: Total steps for this task
+- `current_step`: Current progress (0 to total_steps)
+- `status`: pending, running, completed, or failed
+- `started_at`: Unix timestamp when task started
+- `last_updated`: Unix timestamp of last progress update
+- `display_message`: Optional message (e.g. phase or status) shown in dashboard
+
+## CLI Tool: mpm
+
+The `mpm` command provides easy dashboard access:
+
+```bash
+# View experiment database
+mpm ./progresslogs/experiment1.db
+
+# Show help
+mpm --help
+```
+
+Install the CLI:
+```bash
+julia --project -e 'using Pkg; Pkg.add("MultiProgressManagers")'
+# Then add to PATH or create alias
+```
+
+## Keyboard Shortcuts
+
+In the dashboard:
+- `1-2`: Switch between Runs and Details tabs
+- `↑↓`: Navigate experiments/tasks
+- `Enter`: Select experiment (in Runs tab)
+- `q`: Quit
+
+## Configuration
+
+### Database Location
+
+By default, you specify the database path when creating an experiment. The directory will be created if it doesn't exist.
+
+```julia
+# Example: Create database in specific directory
+manager = ProgressManager("My Experiment", 3; db_path = "./logs/run1.db")
+```
+
+## Differences from v0.0.x
+
+This is a simplified rewrite focused on multi-task experiments:
+
+| Feature | v0.0.x | v0.1.0+ |
+|---------|--------|---------|
+| Display | ProgressMeter.jl | Tachikoma dashboard |
+| Persistence | None | SQLite (current state only) |
+| Task Model | Single task | Multi-task experiments |
+| Dashboard | Terminal bars | 2-tab TUI (Runs + Details) |
+| Admin Tools | None | Removed (simplified) |
+| Distributed | RemoteChannels | ProgressTask + get_task(..., :remote); single DB writer, channel-based |
+| History | Full snapshots | Current state only |
+
+## Development
+
+Run tests:
+```bash
+julia --project -e 'using Pkg; Pkg.test()'
+```
+
+Build documentation:
+```bash
+cd docs && julia make.jl
+```
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions welcome! Please open an issue to discuss changes before submitting PRs.

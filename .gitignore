@@ -1,1 +1,5 @@
 Manifest.toml
+dev/
+.sisyphus
+progresslogs/
+LocalPreferences.toml

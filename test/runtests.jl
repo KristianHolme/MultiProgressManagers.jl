@@ -1,3 +1,4 @@
-using TestItemRunner
+using MultiProgressManagers
+using ParallelTestRunner
 
-@run_package_tests
+runtests(MultiProgressManagers, ARGS)
