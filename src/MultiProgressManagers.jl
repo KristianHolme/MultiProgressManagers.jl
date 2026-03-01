@@ -14,6 +14,7 @@ include("dashboard/view.jl")
 include("dashboard/update.jl")
 include("dashboard/runs_tab.jl")
 include("dashboard/running_tab.jl")
+include("cli.jl")
 
 # Re-export from Database
 export Database
