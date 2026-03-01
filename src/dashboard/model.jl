@@ -11,7 +11,7 @@ import Tachikoma: TabBar, SelectableList, ListItem, Table, Gauge, Sparkline,
                   BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
                   render_resize_handles!, handle_resize!, DataTable, DataColumn,
                   ProgressList, ProgressItem, Block, Paragraph, StatusBar,
-                  tstyle, BOX_HEAVY
+                  Modal, tstyle, BOX_HEAVY
 
 const tsplit = Tachikoma.split
 
@@ -33,12 +33,13 @@ end
     id::Union{String,Missing}
     name::Union{String,Missing}
     description::Union{String,Missing}
+    total_tasks::Union{Int,Missing}
     total_steps::Union{Int,Missing}
     current_step::Union{Int,Missing}
+    completed_tasks::Union{Int,Missing}
     status::Union{Symbol,Missing}
     started_at::Union{DateTime,Missing}
     finished_at::Union{DateTime,Nothing,Missing}
-    final_message::Union{String,Missing}
 end
 
 # === Dashboard Model ===
@@ -55,7 +56,7 @@ end
     folder_path::String = ""
     available_dbs::Vector{String} = String[]
     
-    # Tabs: 1=Select (folder mode only), 2=Running, 3=Stats, 4=Admin
+    # Tabs: 1=Runs, 2=Details
     active_tab::Int = 1
     
     # Configurable update frequency (like btop)
@@ -66,23 +67,19 @@ end
     # Configurable speed calculation window
     speed_window_seconds::Float64 = 30.0
     
-    # Tab 1: Experiment Selector (folder mode)
-    select_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
-    selected_db_index::Int = 0
-    
-    # Tab 2: Running Experiments
+    # Tab 1: Runs List
+    runs_selected::Int = 0
+    selected_experiment_id::String = ""
+    # Tab 2: Experiment Details
     running_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(50), Fill()])
-    running_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fill(), Fixed(8)])
+    running_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fill(), Percent(30)])
     running_experiments::Vector{ExperimentSummary} = ExperimentSummary[]
     selected_experiment::Int = 0
+    task_scroll_offset::Int = 0
+    selected_task::Int = 0
+    running_focus::Int = 1  # 1=Experiments, 2=Tasks
     
-    # Tab 3: Stats
-    stats_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(40), Fill()])
-    completion_histogram::Vector{Int} = Int[]
-    total_stats::Union{NamedTuple,Nothing} = nothing
-    last_stats_refresh::Float64 = 0.0
-    
-    # Tab 4: Admin
+    # Admin data (used for runs list/details)
     admin_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
     admin_experiments::Vector{ExperimentAdminView} = ExperimentAdminView[]
     admin_selected::Int = 0
@@ -90,7 +87,9 @@ end
     admin_edit_field::Int = 1  # 1=status, 2=current_step, 3=message
     admin_edit_input::Union{TextInput,Nothing} = nothing
     admin_confirm_action::Union{Symbol,Nothing} = nothing  # :delete, :reset, etc.
-    
+    confirm_mark_failed_id::Union{String,Nothing} = nothing
+    confirm_modal_selected::Symbol = :cancel  # :cancel or :confirm
+
     # Async
     _task_queue::TaskQueue = TaskQueue()
     
@@ -138,7 +137,6 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
             error("No .db files found in folder: $db_path")
         end
         
-        # Start with selector tab
         active_tab = 1
     else
         # Single file mode
@@ -146,7 +144,7 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
             error("Database file not found: $db_path")
         end
         available_dbs = [db_path]
-        active_tab = 2  # Skip selector, go straight to Running tab
+        active_tab = 1
     end
     
     # Initialize first database
@@ -154,7 +152,7 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
     
     # Create model
     model = ProgressDashboard(
-        db_path = folder_mode ? "" : db_path,
+        db_path = available_dbs[1],
         db_handle = db_handle,
         folder_mode = folder_mode,
         folder_path = folder_mode ? db_path : "",
@@ -168,7 +166,7 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
     Tachikoma.app(model; fps=60)
     
     # Cleanup
-    Database.close!(db_handle)
+    Database.close_db!(db_handle)
 end
 
 """
@@ -191,13 +189,14 @@ function _poll_database!(m::ProgressDashboard)
     m._last_poll = current_time
     
     m.db_handle === nothing && return
-    
+    handle = m.db_handle::Database.DBHandle
+
     # Refresh running experiments
-    experiments = Database.get_running_experiments(m.db_handle)
-    
+    experiments = Database.get_running_experiments(handle)
+
     m.running_experiments = map(eachrow(experiments)) do exp
-        speeds = Database.calculate_speeds(m.db_handle, exp.id; window_seconds=m.speed_window_seconds)
-        sparkline = Database.get_recent_speeds(m.db_handle, exp.id; n=20, window_seconds=60)
+        speeds = Database.calculate_speeds(handle, exp.id; window_seconds=m.speed_window_seconds)
+        sparkline = Database.get_recent_speeds(handle, exp.id; n=20, window_seconds=60)
         
         # Calculate ETA
         remaining_steps = exp.total_steps - exp.current_step
@@ -221,18 +220,19 @@ function _poll_database!(m::ProgressDashboard)
     end
     
     # Refresh admin list (all experiments)
-    all_exps = Database.get_all_experiments(m.db_handle; limit=100)
+    all_exps = Database.get_all_experiments(handle; limit=100)
     m.admin_experiments = map(eachrow(all_exps)) do exp
         ExperimentAdminView(
             id = ismissing(exp.id) ? "" : exp.id,
             name = ismissing(exp.name) ? "Unknown" : exp.name,
             description = ismissing(exp.description) ? "" : exp.description,
+            total_tasks = ismissing(exp.total_tasks) ? 0 : exp.total_tasks,
             total_steps = ismissing(exp.total_steps) ? 0 : exp.total_steps,
             current_step = ismissing(exp.current_step) ? 0 : exp.current_step,
+            completed_tasks = ismissing(exp.completed_tasks) ? 0 : exp.completed_tasks,
             status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
             started_at = exp.started_at,
             finished_at = exp.finished_at,
-            final_message = ismissing(exp.final_message) ? "" : exp.final_message
         )
     end
     
@@ -241,6 +241,16 @@ function _poll_database!(m::ProgressDashboard)
         m.admin_selected = 0
     elseif m.admin_selected > length(m.admin_experiments)
         m.admin_selected = length(m.admin_experiments)
+    end
+    
+    if !isempty(m.selected_experiment_id)
+        has_selected = any(m.admin_experiments) do exp
+            !ismissing(exp.id) && exp.id == m.selected_experiment_id
+        end
+        if !has_selected
+            m.selected_experiment_id = ""
+            m.runs_selected = 0
+        end
     end
 end
 
@@ -272,8 +282,12 @@ function format_speed(steps_per_sec::Float64)::String
     end
 end
 
+function format_duration(::Missing, _)::String
+    return "N/A"
+end
+
 function format_duration(started_at::DateTime, finished_at::Union{DateTime,Nothing})::String
-    end_time = finished_at === nothing ? now() : finished_at
+    end_time = finished_at === nothing ? now(UTC) : finished_at
     duration = end_time - started_at
     total_seconds = round(Int, Dates.value(duration) / 1000)
     
@@ -286,4 +300,9 @@ function format_duration(started_at::DateTime, finished_at::Union{DateTime,Nothi
     else
         return @sprintf("%dm %02ds", mins, secs)
     end
+end
+
+function format_datetime(dt::Union{DateTime,Missing})::String
+    ismissing(dt) && return "Unknown"
+    return Dates.format(dt, "HH:MM:SS")
 end

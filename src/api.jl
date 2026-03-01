@@ -1,229 +1,120 @@
-"""
-    create_progress_manager(name::String, total_steps::Int;
-                           description::String="",
-                           db_path::String=default_db_path(),
-                           update_frequency_ms::Int=100,
-                           speed_window_seconds::Real=30,
-                           worker_count::Int=1) -> ProgressManager
+# MULTI-TASK API: create_experiment, update!, finish_task!, finish_experiment!, fail_task!
 
-Create a new ProgressManager for tracking experiment progress.
+using Dates
+using DataFrames
 
-# Arguments
-- `name::String`: Human-readable name for the experiment (used in dashboard)
-- `total_steps::Int`: Total number of steps to complete
-- `description::String=""`: Optional description
-- `db_path::String`: Path to SQLite database file (default: ./progresslogs/{uuid}.db or ~/.local/share/MultiProgressManagers/default.db)
-- `update_frequency_ms::Int=100`: Minimum time between database writes (throttling)
-- `speed_window_seconds::Real=30`: Time window for short-horizon speed calculation
-- `worker_count::Int=1`: Number of workers expected (for distributed runs)
-
-# Returns
-- `ProgressManager`: Manager instance that coordinates progress tracking
-
-# Example
-```julia
-manager = create_progress_manager("Training Run", 10000; 
-                                  description="Epoch 1-10",
-                                  db_path="./progresslogs/experiment1.db")
-
-# In your computation loop:
-for i in 1:10000
-    do_work(i)
-    update!(manager, i; info="Processing batch \$i")
+"""Create a new multi-task experiment and return a ProgressManager."""
+function create_experiment(name::String, total_tasks::Int; description::String = "", db_path::String)
+    handle = Database.init_db!(db_path)
+    experiment_id = Database.create_experiment(handle, name, total_tasks; description = description)
+    # Build in-memory task statuses from DB
+    df = Database.get_experiment_tasks(handle, experiment_id)
+    manager = ProgressManager(
+        experiment_id,
+        db_path,
+        total_tasks,
+        time(),
+        Dict{Int, TaskStatus}(),
+        handle,
+        nothing,
+        nothing,
+        nothing,
+        Task[],
+        Base.Threads.ReentrantLock(),
+    )
+    if !isempty(df)
+        for row in eachrow(df)
+            tnum = Int(row[:task_number])
+            ts = TaskStatus(string(row[:id]), Int(row[:total_steps]), Int(row[:current_step]), String(row[:status]), float(row[:started_at]))
+            manager.task_status[tnum] = ts
+        end
+    end
+    return manager
 end
 
-finish!(manager; message="Training completed successfully")
-```
+# Outer constructor for easier creation
+function ProgressManager(experiment_name::String, num_tasks::Int; description::String="", db_path::String="./progresslogs/experiment.db")
+    create_experiment(experiment_name, num_tasks; description=description, db_path=db_path)
+end
 
-# Dashboard Access
-After creating the manager, you can view it in the dashboard:
-```bash
-# From shell:
-mpm ./progresslogs/experiment1.db
+"""Update progress for a specific task within a multi-task experiment."""
+function update!(manager::ProgressManager, task_number::Int, current_step::Int; total_steps::Int=0, message::String="")
+    ts = manager.task_status[task_number]
+    # Use provided total_steps, or dynamically grow if not specified
+    new_total_steps = total_steps > 0 ? total_steps : max(ts.total_steps, current_step)
+    new_step = max(0, min(current_step, new_total_steps))
+    # Keep as running unless already completed
+    new_status = ts.status == "completed" ? "completed" : "running"
+    msg = isempty(message) ? nothing : message
+    Database.update_task!(manager.db_handle, ts.task_id, new_step; total_steps=new_total_steps, status=new_status, message=msg)
+    manager.task_status[task_number] = TaskStatus(ts.task_id, new_total_steps, new_step, new_status, ts.started_at)
+    return nothing
+end
 
-# Or from Julia:
-using MultiProgressManagers
-view_dashboard("./progresslogs/experiment1.db")
-```
-"""
+"""Mark a specific task as completed."""
+function finish_task!(manager::ProgressManager, task_number::Int)
+    ts = manager.task_status[task_number]
+    Database.update_task!(manager.db_handle, ts.task_id, ts.total_steps; total_steps=ts.total_steps, status="completed")
+    manager.task_status[task_number] = TaskStatus(ts.task_id, ts.total_steps, ts.total_steps, "completed", ts.started_at)
+    return nothing
+end
+
+"""Finish an entire experiment: mark all tasks as completed and set experiment status."""
+function finish_experiment!(manager::ProgressManager)
+    Database.finish_experiment!(manager.db_handle, manager.experiment_id; message = "Completed successfully")
+    for (k, ts) in manager.task_status
+        manager.task_status[k] = TaskStatus(ts.task_id, ts.total_steps, ts.total_steps, "completed", ts.started_at)
+    end
+    return nothing
+end
+
+"""Mark a specific task as failed with a message."""
+function fail_task!(manager::ProgressManager, task_number::Int, error_message::String)
+    ts = manager.task_status[task_number]
+    Database.update_task!(manager.db_handle, ts.task_id, ts.current_step; total_steps=ts.total_steps, status="failed")
+    manager.task_status[task_number] = TaskStatus(ts.task_id, ts.total_steps, ts.current_step, "failed", ts.started_at)
+    return nothing
+end
+
+# ... rest of the file (old compatibility functions)
+
+# Legacy compatibility functions
+
 function create_progress_manager(name::String, total_steps::Int;
                                 description::String="",
                                 db_path::String=default_db_path(),
                                 update_frequency_ms::Int=100,
                                 speed_window_seconds::Real=30,
                                 worker_count::Int=1)
-    # Ensure directory exists
-    mkpath(dirname(db_path))
-    
-    # Initialize database and get handle
-    db_handle = Database.init_db!(db_path)
-    
-    # Create experiment record
-    experiment_id = Database.create_experiment(db_handle, name, total_steps;
-                                               description=description,
-                                               worker_count=worker_count)
-    
-    # Create RemoteChannel for worker coordination (if distributed)
-    worker_channel = worker_count > 1 ? RemoteChannel(() -> Channel{ProgressMessage}(4096), 1) : nothing
-    
-    manager = ProgressManager(experiment_id, db_path, total_steps;
-                             worker_channel=worker_channel,
-                             update_frequency_ms=update_frequency_ms,
-                             speed_window_seconds=speed_window_seconds)
-    
-    # Store handle in task local storage for this task
-    tls = task_local_storage()
-    tls[:mpm_db_handle] = db_handle
-    
-    # Print helpful message about dashboard
-    @info """
-    ProgressManager created for experiment '$name'
-    
-    Database: $db_path
-    Experiment ID: $experiment_id
-    
-    To view dashboard:
-      Shell:  mpm $db_path
-      Julia:  using MultiProgressManagers; view_dashboard("$db_path")
-    
-    To view all experiments in folder:
-      Shell:  mpm $(dirname(db_path))
-      Julia:  using MultiProgressManagers; view_folder_dashboard("$(dirname(db_path))")
-    """
-    
+    # Delegate to new API
+    manager = create_experiment(name, total_steps;
+                                description=description,
+                                db_path=db_path)
     return manager
 end
 
-"""
-    update!(manager::ProgressManager, current_step::Int; info::String="")
-
-Record a progress update. Writes to database with throttling based on update_frequency_ms.
-
-# Arguments
-- `manager::ProgressManager`: The progress manager
-- `current_step::Int`: Current step number (must be >= 0 and <= total_steps)
-- `info::String=""`: Optional status message
-"""
 function update!(manager::ProgressManager, current_step::Int; info::String="")
-    current_time = time()
-    elapsed = current_time - manager.start_time
-    
-    # Validate step
-    current_step = max(0, min(current_step, manager.total_steps))
-    
-    # Throttle database writes
-    if (current_time - manager.last_update_time) * 1000 >= manager.update_frequency_ms
-        # Get or create handle
-        tls = task_local_storage()
-        if !haskey(tls, :mpm_db_handle)
-            tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
-        end
-        db_handle = tls[:mpm_db_handle]
-        
-        elapsed_ms = round(Int, elapsed * 1000)
-        Database.record_progress!(db_handle, manager.experiment_id, current_step, elapsed_ms; info=info)
-        manager.last_update_time = current_time
-    end
-    
-    manager.last_step = current_step
-    
+    # Delegate to task-based update; pass info as display message for task 1
+    update!(manager, 1, current_step; message = info)
     return nothing
 end
 
-"""
-    finish!(manager::ProgressManager; message::String="Completed successfully")
-
-Mark the experiment as completed.
-
-# Arguments
-- `manager::ProgressManager`: The progress manager
-- `message::String="Completed successfully"`: Completion message
-"""
 function finish!(manager::ProgressManager; message::String="Completed successfully")
-    # Record final progress
-    update!(manager, manager.total_steps; info=message)
-    
-    # Get handle
-    tls = task_local_storage()
-    if !haskey(tls, :mpm_db_handle)
-        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
-    end
-    db_handle = tls[:mpm_db_handle]
-    
-    # Mark as finished
-    Database.finish_experiment!(db_handle, manager.experiment_id; message=message)
-    
-    # Close handle
-    Database.close_db!(db_handle)
-    delete!(tls, :mpm_db_handle)
-    
-    @info "Experiment completed: $message"
-    
+    finish_experiment!(manager)
     return nothing
 end
 
-"""
-    fail!(manager::ProgressManager, error::Exception; message::String=nothing)
-
-Mark the experiment as failed.
-
-# Arguments
-- `manager::ProgressManager`: The progress manager
-- `error::Exception`: The exception that caused the failure
-- `message::String=nothing`: Optional custom error message
-"""
 function fail!(manager::ProgressManager, error::Exception; message::Union{String,Nothing}=nothing)
     error_msg = message !== nothing ? message : sprint(showerror, error)
-    
-    # Get handle
-    tls = task_local_storage()
-    if !haskey(tls, :mpm_db_handle)
-        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
-    end
-    db_handle = tls[:mpm_db_handle]
-    
-    Database.fail_experiment!(db_handle, manager.experiment_id, error_msg)
-    
-    # Close handle
-    Database.close_db!(db_handle)
-    delete!(tls, :mpm_db_handle)
-    
-    @error "Experiment failed: $error_msg"
-    
+    fail_task!(manager, 1, error_msg)
     return nothing
 end
 
-"""
-    fail!(manager::ProgressManager, error_message::String)
-
-Mark the experiment as failed with a message.
-"""
 function fail!(manager::ProgressManager, error_message::String)
-    # Get handle
-    tls = task_local_storage()
-    if !haskey(tls, :mpm_db_handle)
-        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
-    end
-    db_handle = tls[:mpm_db_handle]
-    
-    Database.fail_experiment!(db_handle, manager.experiment_id, error_message)
-    
-    # Close handle
-    Database.close_db!(db_handle)
-    delete!(tls, :mpm_db_handle)
-    
-    @error "Experiment failed: $error_message"
-    
+    fail_task!(manager, 1, error_message)
     return nothing
 end
 
-"""
-    default_db_path() -> String
-
-Get the default database path.
-Creates a UUID-named database in ./progresslogs/ if the directory exists,
-otherwise uses ~/.local/share/MultiProgressManagers/
-"""
 function default_db_path()
     # Check if ./progresslogs exists
     if isdir("./progresslogs")
@@ -238,30 +129,20 @@ function default_db_path()
     end
 end
 
-"""
-    get_progress(manager::ProgressManager) -> Float64
-
-Get current progress as a fraction (0.0 to 1.0).
-"""
 function get_progress(manager::ProgressManager)
-    return manager.last_step / manager.total_steps
+    # Calculate average progress across all tasks
+    if isempty(manager.task_status)
+        return 0.0
+    end
+    total = sum(ts.current_step for ts in values(manager.task_status))
+    total_steps = sum(ts.total_steps for ts in values(manager.task_status))
+    return total_steps > 0 ? total / total_steps : 0.0
 end
 
-"""
-    get_speeds(manager::ProgressManager) -> NamedTuple
-
-Get current speed metrics.
-
-Returns (total_avg_speed, short_avg_speed) in steps per second.
-"""
 function get_speeds(manager::ProgressManager)
     # Get handle
-    tls = task_local_storage()
-    if !haskey(tls, :mpm_db_handle)
-        tls[:mpm_db_handle] = Database.init_db!(manager.db_path)
-    end
-    db_handle = tls[:mpm_db_handle]
-    
-    return Database.calculate_speeds(db_handle, manager.experiment_id; 
-                                    window_seconds=manager.speed_window_seconds)
+    db_handle = Database.init_db!(manager.db_path)
+    speeds = Database.calculate_speeds(db_handle, manager.experiment_id)
+    Database.close_db!(db_handle)
+    return speeds
 end

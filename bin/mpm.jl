@@ -24,8 +24,7 @@ function main()
     args = ARGS
 
     if isempty(args) || args[1] in ("-h", "--help", "help")
-        println(
-            """
+        println("""
             mpm - MultiProgressManager Dashboard
 
             Usage:
@@ -39,18 +38,11 @@ function main()
               mpm ~/.local/share/MultiProgressManagers/default.db
               
             Keyboard Shortcuts (in dashboard):
-              [1-4]     Switch tabs
+              [1-2]     Switch tabs (Runs, Details)
               [↑↓]      Navigate lists
               [Enter]   Select / Open
               [q]       Quit
-              
-            Admin Tab:
-              [e]       Edit experiment
-              [c]       Mark as completed
-              [r]       Reset to running
-              [d]       Delete experiment
-            """
-        )
+            """)
         return 0
     end
 
@@ -63,34 +55,43 @@ function main()
         else
             # Try to find default database
             cache_dir = get(ENV, "XDG_DATA_HOME", joinpath(homedir(), ".local", "share"))
-            default_path = joinpath(cache_dir, "MultiProgressManagers", "default.db")
-            if isfile(default_path)
-                path = default_path
+            default_db = joinpath(cache_dir, "MultiProgressManagers", "default.db")
+            if isfile(default_db)
+                path = default_db
             else
-                println(stderr, "Error: No ./progresslogs/ folder found and no default database exists.")
-                println(stderr, "Run 'mpm --help' for usage information.")
+                println("Error: No ./progresslogs/ directory found and no default database exists.")
+                println("Run an experiment first, or specify a database file path.")
                 return 1
             end
         end
     end
 
-    # Validate path
-    if !isfile(path) && !isdir(path)
-        println(stderr, "Error: Path not found: $path")
+    # Determine if path is file or folder
+    if isfile(path)
+        # Single database mode
+        db_path = path
+    elseif isdir(path)
+        # Folder mode - find all .db files
+        db_files = filter(f -> endswith(f, ".db"), readdir(path; join=true))
+        if isempty(db_files)
+            println("Error: No .db files found in directory: $path")
+            return 1
+        end
+        db_path = first(db_files)
+        if length(db_files) > 1
+            println("Note: Multiple databases found, using: $(basename(db_path))")
+        end
+    else
+        println("Error: Path not found: $path")
         return 1
-    end
-
-    # Check for .db extension if it's a file
-    if isfile(path) && !endswith(path, ".db")
-        println(stderr, "Warning: File doesn't have .db extension: $path")
     end
 
     # Launch dashboard
     try
         println("Loading dashboard for: $path")
-        println("Press 'q' to quit, '1-4' for tabs")
+        println("Press 'q' to quit, '1-2' for tabs")
 
-        view_dashboard(path)
+        view_dashboard(db_path)
 
         return 0
     catch e
@@ -98,10 +99,10 @@ function main()
             println("\nInterrupted.")
             return 0
         else
-            println(stderr, "Error: $(sprint(showerror, e))")
+            println("Error: $e")
             return 1
         end
     end
 end
 
-main()
+exit(main())

@@ -3,156 +3,120 @@ Running experiments tab - shows active experiments with real-time metrics.
 """
 
 function _view_running_tab!(m::ProgressDashboard, area::Rect, buf)
-    rows = split_layout(m.running_layout, area)
-    length(rows) < 2 && return
+    # Split area: 30% top, 70% bottom
+    main_layout = Layout(Vertical, [Percent(30), Fill()])
+    main_rows = tsplit(main_layout, area)
     
-    render_resize_handles!(buf, m.running_layout)
+    # Top section: Table (60%) and Histogram (40%)
+    top_layout = Layout(Horizontal, [Percent(60), Fill()])
+    top_cols = tsplit(top_layout, main_rows[1])
     
-    # Split left pane into: table | summary
-    left_rows = split_layout(m.running_left_layout, rows[1])
-    length(left_rows) < 2 && return
+    # Render experiment details
+    _view_experiment_detail_panel!(m, top_cols[1], buf)
     
-    # === Top Left: Running Experiments Table ===
-    table_block = Block(
-        title = " Running Experiments ",
-        border_style = _pane_border(1),
-        title_style = _pane_title(1)
-    )
-    table_area = render(table_block, left_rows[1], buf)
+    # Render Histogram
+    _view_task_histogram!(m, top_cols[2], buf)
     
-    if isempty(m.running_experiments)
-        set_string!(buf, table_area.x, table_area.y + 1, 
-                   "No running experiments", tstyle(:text_dim); 
-                   max_x = right(table_area))
-    else
-        # Build DataTable
-        columns = [
-            DataColumn("Name", 20, col_left),
-            DataColumn("Progress", 10, col_center),
-            DataColumn("ETA", 10, col_center),
-            DataColumn("Short Speed", 12, col_center),
-            DataColumn("Avg Speed", 12, col_center),
-        ]
-        
-        data = map(m.running_experiments) do exp
-            name = ismissing(exp.name) ? "Unknown" : exp.name
-            progress = ismissing(exp.progress_pct) ? 0.0 : exp.progress_pct
-            [
-                name,
-                @sprintf("%.1f%%", progress),
-                format_eta(exp.eta_seconds),
-                format_speed(exp.short_avg_speed),
-                format_speed(exp.total_avg_speed),
-            ]
-        end
-        
-        table = DataTable(columns, data; selected = m.selected_experiment)
-        render(table, table_area, buf)
-    end
-    
-    # === Bottom Left: Summary ===
-    summary_block = Block(
-        title = " Summary ",
-        border_style = _pane_border(2),
-        title_style = _pane_title(2)
-    )
-    summary_area = render(summary_block, left_rows[2], buf)
-    
-    if !isempty(m.running_experiments)
-        total_exp = length(m.running_experiments)
-        total_progress = sum(e -> e.current_step, m.running_experiments)
-        total_steps = sum(e -> e.total_steps, m.running_experiments)
-        overall_pct = total_steps > 0 ? 100 * total_progress / total_steps : 0
-        
-        y = summary_area.y
-        x = summary_area.x
-        
-        set_string!(buf, x, y, "Experiments: $total_exp", tstyle(:text); max_x = right(summary_area))
-        y += 1
-        set_string!(buf, x, y, "Overall Progress: $(@sprintf("%.1f%%", overall_pct))", tstyle(:accent); max_x = right(summary_area))
-        y += 1
-        set_string!(buf, x, y, "Total Steps: $total_progress / $total_steps", tstyle(:text_dim); max_x = right(summary_area))
-    end
-    
-    # === Right: Detail View ===
-    detail_block = Block(
-        title = " Detail ",
-        border_style = _pane_border(2),
-        title_style = _pane_title(2)
-    )
-    detail_area = render(detail_block, rows[2], buf)
-    
-    if m.selected_experiment > 0 && m.selected_experiment <= length(m.running_experiments)
-        _render_experiment_detail!(m, m.running_experiments[m.selected_experiment], detail_area, buf)
-    else
-        set_string!(buf, detail_area.x, detail_area.y + 1, 
-                   "Select an experiment to view details", tstyle(:text_dim); 
-                   max_x = right(detail_area))
-    end
+    # Bottom section: Task List
+    _view_task_list!(m, main_rows[2], buf)
 end
 
-function _render_experiment_detail!(m::ProgressDashboard, exp::ExperimentSummary, area::Rect, buf)
-    # Handle missing values
+function _find_selected_experiment(m::ProgressDashboard)::Union{ExperimentAdminView,Nothing}
+    isempty(m.selected_experiment_id) && return nothing
+    for exp in m.admin_experiments
+        if !ismissing(exp.id) && exp.id == m.selected_experiment_id
+            return exp
+        end
+    end
+    return nothing
+end
+
+function _view_experiment_detail_panel!(m::ProgressDashboard, area::Rect, buf)
+    # Focus indicator
+    border_style = m.running_focus == 1 ? tstyle(:accent) : tstyle(:border)
+    title_style = m.running_focus == 1 ? tstyle(:accent, bold = true) : tstyle(:title, bold = true)
+
+    table_block = Block(
+        title = " Experiment Details ",
+        border_style = border_style,
+        title_style = title_style
+    )
+    table_area = render(table_block, area, buf)
+
+    exp = _find_selected_experiment(m)
+    if exp === nothing
+        set_string!(
+            buf,
+            table_area.x,
+            table_area.y + 1,
+            "Select an experiment in Runs tab",
+            tstyle(:text_dim);
+            max_x = right(table_area)
+        )
+        return
+    end
+
     name = ismissing(exp.name) ? "Unknown" : exp.name
     status = ismissing(exp.status) ? :unknown : exp.status
-    progress_pct = ismissing(exp.progress_pct) ? 0.0 : exp.progress_pct
-    
-    y = area.y
-    x = area.x
-    max_x = right(area)
-    
-    # Name and status
+    total_tasks = ismissing(exp.total_tasks) ? 0 : exp.total_tasks
+    completed_tasks = ismissing(exp.completed_tasks) ? 0 : exp.completed_tasks
+    total_steps = ismissing(exp.total_steps) ? 0 : exp.total_steps
+    current_step = ismissing(exp.current_step) ? 0 : exp.current_step
+    progress_pct = total_tasks > 0 ? (completed_tasks / total_tasks) * 100 : (total_steps > 0 ? (current_step / total_steps) * 100 : 0.0)
+
+    started_at = exp.started_at
+    finished_at = ismissing(exp.finished_at) ? nothing : exp.finished_at
+    duration_str = ismissing(started_at) ? "N/A" : format_duration(started_at, finished_at)
+
+    y = table_area.y + 1
+    x = table_area.x
+    max_x = right(table_area)
+
     status_style = @match status begin
         :running => tstyle(:warning)
         :completed => tstyle(:success)
         :failed => tstyle(:error)
         _ => tstyle(:text)
     end
-    
+
+    # ETA: use task completion rate if available, else step rate
+    eta_str = "N/A"
+    if status == :completed
+        eta_str = "Done"
+    elseif status == :running && !ismissing(started_at)
+        elapsed_seconds = time() - Dates.datetime2unix(started_at)
+        if total_tasks > 0 && completed_tasks > 0
+            avg_time_per_task = elapsed_seconds / completed_tasks
+            remaining_tasks = total_tasks - completed_tasks
+            eta_seconds = avg_time_per_task * remaining_tasks
+            eta_hours = floor(Int, eta_seconds / 3600)
+            eta_mins = floor(Int, (eta_seconds % 3600) / 60)
+            eta_secs = floor(Int, eta_seconds % 60)
+            eta_str = eta_hours > 0 ? @sprintf("%dh %02dm %02ds", eta_hours, eta_mins, eta_secs) : @sprintf("%dm %02ds", eta_mins, eta_secs)
+        elseif total_steps > 0 && current_step > 0
+            avg_time_per_step = elapsed_seconds / current_step
+            remaining_steps = total_steps - current_step
+            eta_seconds = avg_time_per_step * remaining_steps
+            eta_hours = floor(Int, eta_seconds / 3600)
+            eta_mins = floor(Int, (eta_seconds % 3600) / 60)
+            eta_secs = floor(Int, eta_seconds % 60)
+            eta_str = eta_hours > 0 ? @sprintf("%dh %02dm %02ds", eta_hours, eta_mins, eta_secs) : @sprintf("%dm %02ds", eta_mins, eta_secs)
+        end
+    end
+
     set_string!(buf, x, y, name, tstyle(:accent, bold = true); max_x = max_x)
     y += 1
     set_string!(buf, x, y, "Status: $(string(status))", status_style; max_x = max_x)
-    y += 2
-    
-    # Progress bar (gauge)
-    gauge_y = y
-    gauge_height = 3
-    if y + gauge_height <= bottom(area)
-        gauge = Gauge(
-            label = "Progress",
-            value = progress_pct / 100,
-            show_percentage = true
-        )
-        render(gauge, Rect(x, y, area.width, gauge_height), buf)
-        y += gauge_height + 1
-    end
-    
-    # Metrics
-    if y <= bottom(area)
-        set_string!(buf, x, y, "ETA: $(format_eta(exp.eta_seconds))", tstyle(:text); max_x = max_x)
+    y += 1
+    set_string!(buf, x, y, "Tasks: $(completed_tasks)/$(total_tasks) completed", tstyle(:text); max_x = max_x)
+    y += 1
+    set_string!(buf, x, y, @sprintf("Completion: %.1f%%", progress_pct), tstyle(:text); max_x = max_x)
+    y += 1
+    set_string!(buf, x, y, "Duration: $(duration_str)", tstyle(:text_dim); max_x = max_x)
+    y += 1
+    if status == :running
+        set_string!(buf, x, y, "ETA: $(eta_str)", tstyle(:warning); max_x = max_x)
         y += 1
-    end
-    if y <= bottom(area)
-        set_string!(buf, x, y, "Short Speed: $(format_speed(exp.short_avg_speed))", tstyle(:text); max_x = max_x)
-        y += 1
-    end
-    if y <= bottom(area)
-        set_string!(buf, x, y, "Avg Speed: $(format_speed(exp.total_avg_speed))", tstyle(:text); max_x = max_x)
-        y += 1
-    end
-    if y <= bottom(area)
-        started_str = ismissing(exp.started_at) ? "N/A" : string(exp.started_at)
-        set_string!(buf, x, y, "Started: $(started_str)", tstyle(:text_dim); max_x = max_x)
-        y += 2
-    end
-    
-    # Sparkline of recent speed
-    if !isempty(exp.sparkline) && y + 3 <= bottom(area)
-        set_string!(buf, x, y, "Recent Speed Trend:", tstyle(:accent); max_x = max_x)
-        y += 1
-        
-        sparkline = Sparkline(exp.sparkline)
-        render(sparkline, Rect(x, y, area.width, 3), buf)
     end
 end
 
@@ -165,4 +129,113 @@ end
 
 function _pane_title(pane::Int)
     tstyle(:title, bold = true)
+end
+function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
+    # Focus indicator
+    border_style = m.running_focus == 2 ? tstyle(:accent) : tstyle(:border)
+    title_style = m.running_focus == 2 ? tstyle(:accent, bold = true) : tstyle(:title, bold = true)
+    
+    # 1. Get selected experiment ID
+    exp_id = m.selected_experiment_id
+    if isempty(exp_id)
+        block = Block(title = " Tasks ", border_style = border_style, title_style = title_style)
+        inner_area = render(block, area, buf)
+        set_string!(buf, inner_area.x, inner_area.y + 1, "Select an experiment to view tasks", tstyle(:text_dim))
+        return
+    end
+    
+    exp = _find_selected_experiment(m)
+    exp_name = exp === nothing ? "Selected Experiment" : (ismissing(exp.name) ? "Unknown" : exp.name)
+
+    if m.db_handle === nothing
+        block = Block(title = " Tasks ", border_style = border_style, title_style = title_style)
+        inner_area = render(block, area, buf)
+        set_string!(buf, inner_area.x, inner_area.y + 1, "No database selected", tstyle(:text_dim))
+        return
+    end
+    handle = m.db_handle::Database.DBHandle
+
+    # 2. Query tasks
+    tasks = Database.get_experiment_tasks(handle, exp_id)
+    if isempty(tasks)
+        block = Block(title = " Tasks ", border_style = border_style, title_style = title_style)
+        inner_area = render(block, area, buf)
+        set_string!(buf, inner_area.x, inner_area.y + 1, "No tasks found for this experiment", tstyle(:text_dim))
+        return
+    end
+    
+    # 3. Render block
+    block = Block(title = " Tasks for $(exp_name) ", border_style = border_style, title_style = title_style)
+    inner_area = render(block, area, buf)
+    
+    # 4. Header
+    header_y = inner_area.y
+    header_style = tstyle(:text_dim, bold = true)
+    
+    col_num = inner_area.x
+    col_progress = inner_area.x + 8
+    col_speed = inner_area.x + 30
+    col_status = inner_area.x + 45
+    col_message = inner_area.x + 55
+
+    set_string!(buf, col_num, header_y, "Task #", header_style)
+    set_string!(buf, col_progress, header_y, "Progress", header_style)
+    set_string!(buf, col_speed, header_y, "Speed", header_style)
+    set_string!(buf, col_status, header_y, "Status", header_style)
+    set_string!(buf, col_message, header_y, "Message", header_style)
+    y = header_y + 1
+    max_y = bottom(inner_area)
+    
+    # 5. List items
+    num_visible = max_y - y
+    if num_visible <= 0
+        return
+    end
+    
+    # Clamp scroll offset
+    num_tasks = nrow(tasks)
+    if m.task_scroll_offset > num_tasks - num_visible
+        m.task_scroll_offset = max(0, num_tasks - num_visible)
+    end
+    
+    start_idx = m.task_scroll_offset + 1
+    end_idx = min(start_idx + num_visible - 1, num_tasks)
+    
+    for i in start_idx:end_idx
+        row = tasks[i, :]
+        task_num = ismissing(row.task_number) ? i : row.task_number
+        total = ismissing(row.total_steps) ? 0 : row.total_steps
+        current = ismissing(row.current_step) ? 0 : row.current_step
+        status = ismissing(row.status) ? "unknown" : row.status
+        started_at = ismissing(row.started_at) ? 0.0 : row.started_at
+        last_updated = ismissing(row.last_updated) ? 0.0 : row.last_updated
+        
+        # Speed calculation
+        elapsed = last_updated - started_at
+        speed = elapsed > 0 ? current / elapsed : 0.0
+        # Progress %
+        pct = total > 0 ? current / total : 0.0
+        # Style
+        style = @match Symbol(status) begin
+            :running => tstyle(:warning)
+            :completed => tstyle(:success)
+            :failed => tstyle(:error)
+            _ => tstyle(:text)
+        end
+        # Render row
+        set_string!(buf, col_num, y, @sprintf("#%03d", task_num), style)
+        # Progress bar (gauge)
+        gauge_width = 20
+        gauge_area = Rect(col_progress, y, gauge_width, 1)
+        gauge = Gauge(pct; label = "")
+        render(gauge, gauge_area, buf)
+        set_string!(buf, col_speed, y, format_speed(speed), tstyle(:text))
+        set_string!(buf, col_status, y, status, style)
+        # Display message (epochs, stage, etc.)
+        msg = hasproperty(row, :display_message) ? row[:display_message] : missing
+        msg_str = (msg === missing || ismissing(msg) || isempty(string(msg))) ? "" : string(msg)
+        msg_style = isempty(msg_str) ? tstyle(:text_dim) : tstyle(:text)
+        set_string!(buf, col_message, y, msg_str, msg_style; max_x = right(inner_area))
+        y += 1
+    end
 end

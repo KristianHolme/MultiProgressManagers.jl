@@ -6,14 +6,13 @@ using DataFrames
 using Dates
 using UUIDs
 
-export init_db!, close_db!, DBHandle
-export create_experiment, record_progress!, finish_experiment!, fail_experiment!
+export init_db!, close_db!, DBHandle, ensure_open!
+export create_experiment, create_task, update_task!, get_experiment_tasks
+export record_progress!, finish_experiment!, fail_experiment!
 export get_experiment, get_running_experiments, get_all_experiments
-export get_experiment_history, get_completion_histogram
 export update_experiment_status!, update_experiment_steps!
 export calculate_speeds, get_recent_speeds
-export get_experiment_stats, get_daily_stats
-export ensure_open!
+export get_experiment_stats, get_completion_histogram
 
 """
     DBHandle
@@ -30,6 +29,30 @@ mutable struct DBHandle
     end
 end
 
+function _open_new_db(path::String)
+    db = SQLite.DB(path)
+    DBInterface.execute(db, "PRAGMA journal_mode = WAL;")
+    DBInterface.execute(db, "PRAGMA busy_timeout = 5000;")
+    DBInterface.execute(db, "PRAGMA synchronous = NORMAL;")
+    _init_schema!(db)
+    return db
+end
+
+function _get_db(::Nothing, path::String)
+    return _open_new_db(path)
+end
+
+function _get_db(db::SQLite.DB, path::String)
+    if SQLite.isopen(db)
+        return db
+    end
+    try
+        SQLite.close(db)
+    catch
+    end
+    return _open_new_db(path)
+end
+
 """
     ensure_open!(handle::DBHandle) -> SQLite.DB
 
@@ -37,21 +60,21 @@ Ensure the database handle is open, opening it if necessary.
 Initializes schema on first open. Enables WAL mode and sets busy timeout.
 """
 function ensure_open!(handle::DBHandle)
-    if handle.db === nothing || !SQLite.isopen(handle.db)
-        handle.db = SQLite.DB(handle.path)
-        
-        # Enable WAL mode for better concurrency
-        DBInterface.execute(handle.db, "PRAGMA journal_mode = WAL;")
-        
-        # Set busy timeout to 5 seconds (5000ms) - wait for locks instead of failing
-        DBInterface.execute(handle.db, "PRAGMA busy_timeout = 5000;")
-        
-        # Set synchronous mode to NORMAL for better performance with WAL
-        DBInterface.execute(handle.db, "PRAGMA synchronous = NORMAL;")
-        
-        _init_schema!(handle.db)
+    db = _get_db(handle.db, handle.path)
+    handle.db = db
+    return db
+end
+
+function _close_db(::Nothing)
+    return nothing
+end
+
+function _close_db(db::SQLite.DB)
+    try
+        SQLite.close(db)
+    catch
     end
-    return handle.db
+    return nothing
 end
 
 """
@@ -60,13 +83,8 @@ end
 Close the database handle.
 """
 function close!(handle::DBHandle)
-    if handle.db !== nothing
-        try
-            SQLite.close(handle.db)
-        catch
-        end
-        handle.db = nothing
-    end
+    _close_db(handle.db)
+    handle.db = nothing
     return nothing
 end
 
@@ -81,18 +99,15 @@ function with_retry(f::Function, max_retries::Int=3, initial_delay::Float64=0.01
         try
             return f()
         catch e
-            # Check if it's a database lock error
             error_str = sprint(showerror, e)
-            is_lock_error = occursin("locked", lowercase(error_str)) || 
-                           occursin("busy", lowercase(error_str)) ||
-                           occursin("database is locked", error_str)
-            
+            is_lock_error = occursin("locked", lowercase(error_str)) ||
+                occursin("busy", lowercase(error_str)) ||
+                occursin("database is locked", error_str)
+
             if is_lock_error && attempt < max_retries
-                # Exponential backoff with jitter
                 sleep(delay * (1 + 0.1 * rand()))
-                delay *= 2  # Double the delay for next attempt
+                delay *= 2
             else
-                # Last attempt failed or not a lock error
                 rethrow(e)
             end
         end
@@ -126,166 +141,355 @@ end
 Internal: Initialize database schema with tables and indexes.
 """
 function _init_schema!(db::SQLite.DB)
-    # Experiments table - master records
     DBInterface.execute(
         db,
         """
         CREATE TABLE IF NOT EXISTS experiments (
             id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
+            name TEXT,
             description TEXT,
-            total_steps INTEGER NOT NULL,
-            current_step INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'running',
-            started_at DATETIME NOT NULL,
-            finished_at DATETIME,
-            worker_count INTEGER DEFAULT 1,
+            total_tasks INTEGER,
+            status TEXT CHECK(status IN ('running', 'completed', 'failed')),
+            started_at REAL,
+            finished_at REAL,
             final_message TEXT
         )
         """
     )
 
-    # Progress snapshots table - detailed history
     DBInterface.execute(
         db,
         """
-        CREATE TABLE IF NOT EXISTS progress_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            experiment_id TEXT NOT NULL,
-            timestamp DATETIME NOT NULL,
-            current_step INTEGER NOT NULL,
-            total_elapsed_ms INTEGER NOT NULL,
-            delta_steps INTEGER,
-            delta_ms INTEGER,
-            info TEXT,
-            worker_id INTEGER,
-            FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            experiment_id TEXT,
+            task_number INTEGER,
+            total_steps INTEGER,
+            current_step INTEGER,
+            status TEXT CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+            started_at REAL,
+            last_updated REAL,
+            display_message TEXT DEFAULT '',
+            FOREIGN KEY (experiment_id) REFERENCES experiments(id)
         )
         """
     )
 
-    # Indexes for common queries
     DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_exp_status ON experiments(status)")
-    DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_exp_started ON experiments(started_at)")
-    DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_snapshots_exp ON progress_snapshots(experiment_id)")
-    DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_snapshots_time ON progress_snapshots(timestamp)")
-
-    # Daily stats view
-    DBInterface.execute(
-        db,
-        """
-        CREATE VIEW IF NOT EXISTS v_daily_experiments AS
-        SELECT 
-            date(started_at) as date,
-            count(*) as total_started,
-            sum(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-            sum(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-            sum(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
-        FROM experiments
-        GROUP BY date(started_at)
-        ORDER BY date DESC
-        """
-    )
+    DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_tasks_exp ON tasks(experiment_id)")
+    return nothing
 end
 
-# === CRUD Operations ===
+
+function _current_timestamp()
+    return time()
+end
+
+function _maybe_datetime(value::Union{Missing,Nothing,Real})
+    value === missing && return missing
+    value === nothing && return nothing
+    return unix2datetime(value)
+end
 
 """
-    create_experiment(handle::DBHandle, name::String, total_steps::Int;
-                     description::String="", worker_count::Int=1) -> String
+    create_experiment(handle::DBHandle, name::String, total_tasks::Int;
+                      description::String="") -> String
 
-Create a new experiment record and return its ID.
+Create a new experiment record with tasks and return its ID.
 """
-function create_experiment(handle::DBHandle, name::String, total_steps::Int;
-                          description::String="", worker_count::Int=1)
+function create_experiment(handle::DBHandle, name::String, total_tasks::Int;
+    description::String = ""
+)
     db = ensure_open!(handle)
     experiment_id = string(UUIDs.uuid4())
-    
-    with_retry(3, 0.01) do
-        DBInterface.execute(
-            db,
-            """
-            INSERT INTO experiments (id, name, description, total_steps, started_at, worker_count)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [experiment_id, name, description, total_steps, Dates.now(), worker_count]
-        )
+    started_at = _current_timestamp()
+
+    with_retry() do
+        try
+            DBInterface.execute(
+                db,
+                """
+                INSERT INTO experiments (id, name, description, total_tasks, status, started_at, final_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [experiment_id, name, description, total_tasks, "running", started_at, ""]
+            )
+
+            for task_number in 1:total_tasks
+                task_id = string(UUIDs.uuid4())
+                DBInterface.execute(
+                    db,
+                    """
+                    INSERT INTO tasks
+                        (id, experiment_id, task_number, total_steps, current_step, status, started_at, last_updated, display_message)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        task_id,
+                        experiment_id,
+                        task_number,
+                        0,
+                        0,
+                        "pending",
+                        started_at,
+                        started_at,
+                        "",
+                    ]
+                )
+            end
+        catch
+            rethrow()
+        end
     end
-    
+
     return experiment_id
 end
 
 """
-    record_progress!(handle::DBHandle, experiment_id::String, current_step::Int, 
-                    total_elapsed_ms::Int; info::String="", worker_id::Int=0)
+    create_experiment(name::String, total_tasks::Int;
+                      description::String="", db_path::String) -> String
 
-Record a progress snapshot with automatic delta calculation.
+Create a new experiment in the specified database path.
 """
-function record_progress!(handle::DBHandle, experiment_id::String, current_step::Int, 
-                         total_elapsed_ms::Int; info::String="", worker_id::Int=0)
+function create_experiment(name::String, total_tasks::Int;
+    description::String = "",
+    db_path::String
+)
+    handle = init_db!(db_path)
+    try
+        return create_experiment(handle, name, total_tasks; description = description)
+    finally
+        close_db!(handle)
+    end
+end
+
+"""
+    create_task(handle::DBHandle, experiment_id::String, task_number::Int, total_steps::Int;
+                status::String="pending") -> String
+
+Create a new task for an experiment and return its ID.
+"""
+function create_task(
+    handle::DBHandle,
+    experiment_id::String,
+    task_number::Int,
+    total_steps::Int;
+    status::String = "pending"
+)
     db = ensure_open!(handle)
-    
-    with_retry(3, 0.01) do
-        # Get previous snapshot for delta calculation
-        prev = DBInterface.execute(
+    task_id = string(UUIDs.uuid4())
+    started_at = _current_timestamp()
+
+    with_retry() do
+        DBInterface.execute(
             db,
             """
-            SELECT current_step, total_elapsed_ms 
-            FROM progress_snapshots 
-            WHERE experiment_id = ? 
-            ORDER BY timestamp DESC 
-            LIMIT 1
+            INSERT INTO tasks
+                (id, experiment_id, task_number, total_steps, current_step, status, started_at, last_updated, display_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                task_id,
+                experiment_id,
+                task_number,
+                total_steps,
+                0,
+                status,
+                started_at,
+                started_at,
+                "",
+            ]
+        )
+    end
+
+    return task_id
+end
+
+"""
+    update_task!(handle::DBHandle, task_id::String, current_step::Int;
+                 total_steps::Union{Int,Nothing}=nothing,
+                 status::Union{String,Nothing}=nothing,
+                 message::Union{String,Nothing}=nothing)
+
+Update task progress, timestamps, and optional display message.
+"""
+function update_task!(
+    handle::DBHandle,
+    task_id::String,
+    current_step::Int;
+    total_steps::Union{Int,Nothing} = nothing,
+    status::Union{String,Nothing} = nothing,
+    message::Union{String,Nothing} = nothing
+)
+    db = ensure_open!(handle)
+    last_updated = _current_timestamp()
+
+    task_row = with_retry() do
+        DBInterface.execute(
+            db,
+            "SELECT total_steps FROM tasks WHERE id = ?",
+            [task_id]
+        ) |> DataFrame
+    end
+
+    if isempty(task_row)
+        error("Task not found: $task_id")
+    end
+
+    effective_total = total_steps === nothing ? task_row.total_steps[1] : total_steps
+    next_status = if status !== nothing
+        status
+    elseif effective_total > 0 && current_step >= effective_total
+        "completed"
+    else
+        "running"
+    end
+
+    with_retry() do
+        if total_steps === nothing && message === nothing
+            DBInterface.execute(
+                db,
+                """
+                UPDATE tasks
+                SET current_step = ?, status = ?, last_updated = ?
+                WHERE id = ?
+                """,
+                [current_step, next_status, last_updated, task_id]
+            )
+        elseif total_steps === nothing && message !== nothing
+            DBInterface.execute(
+                db,
+                """
+                UPDATE tasks
+                SET current_step = ?, status = ?, last_updated = ?, display_message = ?
+                WHERE id = ?
+                """,
+                [current_step, next_status, last_updated, message, task_id]
+            )
+        elseif total_steps !== nothing && message === nothing
+            DBInterface.execute(
+                db,
+                """
+                UPDATE tasks
+                SET total_steps = ?, current_step = ?, status = ?, last_updated = ?
+                WHERE id = ?
+                """,
+                [effective_total, current_step, next_status, last_updated, task_id]
+            )
+        else
+            DBInterface.execute(
+                db,
+                """
+                UPDATE tasks
+                SET total_steps = ?, current_step = ?, status = ?, last_updated = ?, display_message = ?
+                WHERE id = ?
+                """,
+                [effective_total, current_step, next_status, last_updated, message, task_id]
+            )
+        end
+    end
+
+    return nothing
+end
+
+"""
+    get_experiment_tasks(handle::DBHandle, experiment_id::String) -> DataFrame
+
+Return all tasks for an experiment.
+"""
+function get_experiment_tasks(handle::DBHandle, experiment_id::String)
+    db = ensure_open!(handle)
+
+    return with_retry() do
+        DBInterface.execute(
+            db,
+            """
+            SELECT * FROM tasks
+            WHERE experiment_id = ?
+            ORDER BY task_number
             """,
             [experiment_id]
         ) |> DataFrame
-
-        delta_steps = 0
-        delta_ms = 0
-        
-        if !isempty(prev)
-            delta_steps = current_step - prev.current_step[1]
-            delta_ms = total_elapsed_ms - prev.total_elapsed_ms[1]
-        end
-
-        # Insert snapshot
-        DBInterface.execute(
-            db,
-            """
-            INSERT INTO progress_snapshots 
-                (experiment_id, timestamp, current_step, total_elapsed_ms, delta_steps, delta_ms, info, worker_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [experiment_id, Dates.now(), current_step, total_elapsed_ms, delta_steps, delta_ms, info, worker_id]
-        )
-
-        # Update experiment current_step
-        DBInterface.execute(
-            db,
-            "UPDATE experiments SET current_step = ? WHERE id = ?",
-            [current_step, experiment_id]
-        )
     end
+end
+
+"""
+    record_progress!(handle::DBHandle, experiment_id::String, current_step::Int,
+                     total_elapsed_ms::Int; info::String="", worker_id::Int=0)
+
+Record progress by updating a task associated with the experiment.
+"""
+function record_progress!(
+    handle::DBHandle,
+    experiment_id::String,
+    current_step::Int,
+    total_elapsed_ms::Int;
+    info::String = "",
+    worker_id::Int = 0
+)
+    db = ensure_open!(handle)
+    task_number = worker_id > 0 ? worker_id : 1
+    _ = total_elapsed_ms
+
+    task_id_df = with_retry() do
+        DBInterface.execute(
+            db,
+            "SELECT id FROM tasks WHERE experiment_id = ? AND task_number = ?",
+            [experiment_id, task_number]
+        ) |> DataFrame
+    end
+
+    if isempty(task_id_df)
+        task_id = create_task(handle, experiment_id, task_number, max(current_step, 0))
+    else
+        task_id = task_id_df.id[1]
+    end
+
+    msg = isempty(info) ? nothing : info
+    update_task!(handle, task_id, current_step; message = msg)
+    return nothing
 end
 
 """
     finish_experiment!(handle::DBHandle, experiment_id::String; message::String="Completed successfully")
 
-Mark an experiment as completed.
+Mark an experiment and its tasks as completed.
 """
-function finish_experiment!(handle::DBHandle, experiment_id::String; message::String="Completed successfully")
+function finish_experiment!(
+    handle::DBHandle,
+    experiment_id::String;
+    message::String = "Completed successfully"
+)
     db = ensure_open!(handle)
-    
-    with_retry(3, 0.01) do
+    finished_at = _current_timestamp()
+
+    with_retry() do
         DBInterface.execute(
             db,
             """
-            UPDATE experiments 
+            UPDATE experiments
             SET status = 'completed', finished_at = ?, final_message = ?
             WHERE id = ?
             """,
-            [Dates.now(), message, experiment_id]
+            [finished_at, message, experiment_id]
+        )
+
+        DBInterface.execute(
+            db,
+            """
+            UPDATE tasks
+            SET current_step = total_steps, status = 'completed', last_updated = ?
+            WHERE experiment_id = ?
+            """,
+            [finished_at, experiment_id]
         )
     end
+
+    return nothing
+end
+
+function fail_experiment!(handle::DBHandle, experiment_id::Nothing, error_message::String)
+    return nothing
 end
 
 """
@@ -295,65 +499,89 @@ Mark an experiment as failed.
 """
 function fail_experiment!(handle::DBHandle, experiment_id::String, error_message::String)
     db = ensure_open!(handle)
-    
-    with_retry(3, 0.01) do
+    finished_at = _current_timestamp()
+
+    with_retry() do
         DBInterface.execute(
             db,
             """
-            UPDATE experiments 
+            UPDATE experiments
             SET status = 'failed', finished_at = ?, final_message = ?
             WHERE id = ?
             """,
-            [Dates.now(), error_message, experiment_id]
+            [finished_at, error_message, experiment_id]
+        )
+
+        DBInterface.execute(
+            db,
+            """
+            UPDATE tasks
+            SET status = 'failed', last_updated = ?
+            WHERE experiment_id = ?
+            """,
+            [finished_at, experiment_id]
         )
     end
+
+    return nothing
 end
 
 """
-    update_experiment_status!(handle::DBHandle, experiment_id::String, status::String; 
-                             message::Union{String,Nothing}=nothing)
+    update_experiment_status!(handle::DBHandle, experiment_id::String, status::String)
 
-Manually update experiment status (for admin operations).
+Manually update experiment status.
 """
-function update_experiment_status!(handle::DBHandle, experiment_id::String, status::String; 
-                                 message::Union{String,Nothing}=nothing)
+function update_experiment_status!(handle::DBHandle, experiment_id::String, status::String)
     db = ensure_open!(handle)
-    
-    with_retry(3, 0.01) do
-        if message !== nothing
+    finished_at = status == "running" ? nothing : _current_timestamp()
+
+    with_retry() do
+        if finished_at === nothing
             DBInterface.execute(
                 db,
-                "UPDATE experiments SET status = ?, final_message = ? WHERE id = ?",
-                [status, message, experiment_id]
+                "UPDATE experiments SET status = ?, finished_at = NULL WHERE id = ?",
+                [status, experiment_id]
             )
         else
             DBInterface.execute(
                 db,
-                "UPDATE experiments SET status = ? WHERE id = ?",
-                [status, experiment_id]
+                "UPDATE experiments SET status = ?, finished_at = ? WHERE id = ?",
+                [status, finished_at, experiment_id]
             )
         end
     end
+
+    return nothing
 end
 
 """
     update_experiment_steps!(handle::DBHandle, experiment_id::String, current_step::Int)
 
-Manually update current step (for admin operations).
+Manually update current step for all tasks in an experiment.
 """
 function update_experiment_steps!(handle::DBHandle, experiment_id::String, current_step::Int)
     db = ensure_open!(handle)
-    
-    with_retry(3, 0.01) do
+    last_updated = _current_timestamp()
+
+    with_retry() do
         DBInterface.execute(
             db,
-            "UPDATE experiments SET current_step = ? WHERE id = ?",
-            [current_step, experiment_id]
+            """
+            UPDATE tasks
+            SET current_step = ?,
+                status = CASE
+                    WHEN total_steps > 0 AND ? >= total_steps THEN 'completed'
+                    ELSE 'running'
+                END,
+                last_updated = ?
+            WHERE experiment_id = ?
+            """,
+            [current_step, current_step, last_updated, experiment_id]
         )
     end
-end
 
-# === Query Operations ===
+    return nothing
+end
 
 """
     get_experiment(handle::DBHandle, experiment_id::String)
@@ -362,226 +590,164 @@ Get experiment details by ID.
 """
 function get_experiment(handle::DBHandle, experiment_id::String)
     db = ensure_open!(handle)
-    
-    result = with_retry(3, 0.01) do
+
+    result = with_retry() do
         DBInterface.execute(
             db,
             "SELECT * FROM experiments WHERE id = ?",
             [experiment_id]
         ) |> DataFrame
     end
-    
-    return isempty(result) ? nothing : result[1, :]
+
+    if isempty(result)
+        return nothing
+    end
+
+    result.started_at .= _maybe_datetime.(result.started_at)
+    result.finished_at .= _maybe_datetime.(result.finished_at)
+    return result[1, :]
 end
 
 """
     get_running_experiments(handle::DBHandle)
 
-Get all running experiments.
+Get all running experiments with aggregate progress.
 """
 function get_running_experiments(handle::DBHandle)
     db = ensure_open!(handle)
-    
-    result = with_retry(3, 0.01) do
+
+    result = with_retry() do
         DBInterface.execute(
             db,
             """
-            SELECT id, name, total_steps, current_step, started_at, worker_count, status,
-                   CAST(current_step AS FLOAT) / total_steps as progress_pct
-            FROM experiments 
-            WHERE status = 'running'
-            ORDER BY started_at DESC
+            SELECT
+                e.id,
+                e.name,
+                e.description,
+                e.total_tasks,
+                e.status,
+                e.started_at,
+                e.finished_at,
+                COALESCE(SUM(t.total_steps), 0) as total_steps,
+                COALESCE(SUM(t.current_step), 0) as current_step,
+                CASE
+                    WHEN COALESCE(SUM(t.total_steps), 0) > 0
+                    THEN CAST(SUM(t.current_step) AS FLOAT) / SUM(t.total_steps)
+                    ELSE 0
+                END as progress_pct
+            FROM experiments e
+            LEFT JOIN tasks t ON t.experiment_id = e.id
+            WHERE e.status = 'running'
+            GROUP BY e.id
+            ORDER BY e.started_at DESC
             """
         ) |> DataFrame
     end
-    
+
+    if !isempty(result)
+        result.started_at .= _maybe_datetime.(result.started_at)
+        result.finished_at .= _maybe_datetime.(result.finished_at)
+    end
+
     return result
 end
 
 """
     get_all_experiments(handle::DBHandle; limit::Int=100, offset::Int=0)
 
-Get all experiments with pagination.
+Get all experiments with pagination and aggregate progress.
 """
 function get_all_experiments(handle::DBHandle; limit::Int=100, offset::Int=0)
     db = ensure_open!(handle)
-    
-    result = with_retry(3, 0.01) do
+
+    result = with_retry() do
         DBInterface.execute(
             db,
             """
-            SELECT *, CAST(current_step AS FLOAT) / total_steps as progress_pct
-            FROM experiments 
-            ORDER BY started_at DESC
+            SELECT
+                e.id,
+                e.name,
+                e.description,
+                e.total_tasks,
+                e.status,
+                e.started_at,
+                e.finished_at,
+                COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) as completed_tasks,
+                0 as total_steps,
+                0 as current_step,
+                CASE
+                    WHEN e.total_tasks > 0
+                    THEN CAST(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) AS FLOAT) / e.total_tasks
+                    ELSE 0
+                END as progress_pct
+            FROM experiments e
+            LEFT JOIN tasks t ON t.experiment_id = e.id
+            GROUP BY e.id
+            ORDER BY e.started_at DESC
             LIMIT ? OFFSET ?
             """,
             [limit, offset]
         ) |> DataFrame
     end
-    
-    return result
-end
 
-"""
-    get_experiment_history(handle::DBHandle, experiment_id::String; 
-                          since::Union{DateTime,Nothing}=nothing)
-
-Get progress history for an experiment.
-"""
-function get_experiment_history(handle::DBHandle, experiment_id::String; 
-                               since::Union{DateTime,Nothing}=nothing)
-    db = ensure_open!(handle)
-    
-    if since !== nothing
-        result = with_retry(3, 0.01) do
-            DBInterface.execute(
-                db,
-                """
-                SELECT * FROM progress_snapshots 
-                WHERE experiment_id = ? AND timestamp > ?
-                ORDER BY timestamp
-                """,
-                [experiment_id, since]
-            ) |> DataFrame
-        end
-    else
-        result = with_retry(3, 0.01) do
-            DBInterface.execute(
-                db,
-                """
-                SELECT * FROM progress_snapshots 
-                WHERE experiment_id = ?
-                ORDER BY timestamp
-                """,
-                [experiment_id]
-            ) |> DataFrame
-        end
+    if !isempty(result)
+        result.started_at .= _maybe_datetime.(result.started_at)
+        result.finished_at .= _maybe_datetime.(result.finished_at)
     end
-    
+
     return result
 end
 
-# === Speed Calculations ===
-
 """
-    calculate_speeds(handle::DBHandle, experiment_id::String; 
-                    window_seconds::Real=30) -> NamedTuple
+    calculate_speeds(handle::DBHandle, experiment_id::String) -> NamedTuple
 
-Calculate total average speed and short-horizon speed.
+Calculate average speed based on task timestamps.
 """
-function calculate_speeds(handle::DBHandle, experiment_id::String; 
-                         window_seconds::Real=30)
+function calculate_speeds(handle::DBHandle, experiment_id::String; window_seconds::Real=30)
     db = ensure_open!(handle)
-    
-    # Get experiment info
-    exp = with_retry(3, 0.01) do
+    _ = window_seconds
+
+    tasks = with_retry() do
         DBInterface.execute(
             db,
-            "SELECT current_step, total_steps FROM experiments WHERE id = ?",
+            """
+            SELECT current_step, started_at, last_updated
+            FROM tasks
+            WHERE experiment_id = ?
+            """,
             [experiment_id]
         ) |> DataFrame
     end
-    
-    if isempty(exp)
+
+    if isempty(tasks)
         return (total_avg_speed = 0.0, short_avg_speed = 0.0)
     end
-    
-    current_step = exp.current_step[1]
-    
-    # Calculate total average (from very first snapshot)
-    first_snap = with_retry(3, 0.01) do
-        DBInterface.execute(
-            db,
-            """
-            SELECT timestamp, current_step, total_elapsed_ms
-            FROM progress_snapshots 
-            WHERE experiment_id = ?
-            ORDER BY timestamp ASC
-            LIMIT 1
-            """,
-            [experiment_id]
-        ) |> DataFrame
-    end
-    
-    total_avg_speed = 0.0
-    if !isempty(first_snap) && first_snap.total_elapsed_ms[1] > 0
-        total_elapsed_sec = first_snap.total_elapsed_ms[1] / 1000
-        total_avg_speed = current_step / total_elapsed_sec
-    end
-    
-    # Calculate short-horizon speed from window
-    window_start = Dates.now() - Dates.Second(round(Int, window_seconds))
-    window_snaps = with_retry(3, 0.01) do
-        DBInterface.execute(
-            db,
-            """
-            SELECT delta_steps, delta_ms
-            FROM progress_snapshots 
-            WHERE experiment_id = ? AND timestamp > ? AND delta_steps > 0
-            ORDER BY timestamp
-            """,
-            [experiment_id, window_start]
-        ) |> DataFrame
-    end
-    
-    short_avg_speed = 0.0
-    if !isempty(window_snaps)
-        total_delta_steps = sum(window_snaps.delta_steps)
-        total_delta_ms = sum(window_snaps.delta_ms)
-        if total_delta_ms > 0
-            short_avg_speed = total_delta_steps / (total_delta_ms / 1000)
+
+    speeds = Float64[]
+    for row in eachrow(tasks)
+        elapsed = row.last_updated - row.started_at
+        if elapsed > 0
+            push!(speeds, row.current_step / elapsed)
         end
     end
-    
-    return (
-        total_avg_speed = total_avg_speed,
-        short_avg_speed = short_avg_speed > 0 ? short_avg_speed : total_avg_speed
-    )
+
+    total_avg_speed = isempty(speeds) ? 0.0 : sum(speeds) / length(speeds)
+    return (total_avg_speed = total_avg_speed, short_avg_speed = total_avg_speed)
 end
 
 """
-    get_recent_speeds(handle::DBHandle, experiment_id::String; 
-                     n::Int=20, window_seconds::Real=60)
+    get_recent_speeds(handle::DBHandle, experiment_id::String; n::Int=20)
 
-Get recent speed measurements as a vector for sparkline.
+Return a placeholder vector of recent speeds.
 """
-function get_recent_speeds(handle::DBHandle, experiment_id::String; 
-                          n::Int=20, window_seconds::Real=60)
-    db = ensure_open!(handle)
-    
-    window_start = Dates.now() - Dates.Second(round(Int, window_seconds))
-    
-    result = with_retry(3, 0.01) do
-        DBInterface.execute(
-            db,
-            """
-            SELECT delta_steps, delta_ms,
-                   CAST(delta_steps AS FLOAT) / (CAST(delta_ms AS FLOAT) / 1000) as speed
-            FROM progress_snapshots 
-            WHERE experiment_id = ? AND timestamp > ? AND delta_ms > 0
-            ORDER BY timestamp DESC
-            LIMIT ?
-            """,
-            [experiment_id, window_start, n]
-        ) |> DataFrame
-    end
-    
-    if isempty(result)
+function get_recent_speeds(handle::DBHandle, experiment_id::String; n::Int=20, window_seconds::Real=60)
+    _ = window_seconds
+    speeds = calculate_speeds(handle, experiment_id)
+    if speeds.total_avg_speed <= 0 || n <= 0
         return Float64[]
     end
-    
-    # Reverse to get chronological order and handle any Inf/NaN
-    speeds = Float64[]
-    for s in reverse(result.speed)
-        if isfinite(s) && s >= 0
-            push!(speeds, s)
-        end
-    end
-    
-    return speeds
+    return fill(speeds.total_avg_speed, min(n, 20))
 end
-
-# === Statistics ===
 
 """
     get_experiment_stats(handle::DBHandle; days::Int=7)
@@ -590,47 +756,46 @@ Get aggregate statistics for experiments.
 """
 function get_experiment_stats(handle::DBHandle; days::Int=7)
     db = ensure_open!(handle)
-    
-    since = Dates.now() - Dates.Day(days)
-    
-    result = with_retry(3, 0.01) do
+    since = _current_timestamp() - (days * 24 * 3600)
+
+    result = with_retry() do
         DBInterface.execute(
             db,
             """
-            SELECT 
+            SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
                 SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running,
-                AVG(CASE 
-                    WHEN finished_at IS NOT NULL 
-                    THEN (julianday(finished_at) - julianday(started_at)) * 86400 
-                    ELSE NULL 
+                AVG(CASE
+                    WHEN finished_at IS NOT NULL
+                    THEN (finished_at - started_at)
+                    ELSE NULL
                 END) as avg_duration_seconds
-            FROM experiments 
+            FROM experiments
             WHERE started_at > ?
             """,
             [since]
         ) |> DataFrame
     end
-    
+
     if isempty(result)
         return (
             total = 0,
             completed = 0,
             failed = 0,
             running = 0,
-            avg_duration_seconds = nothing
+            avg_duration_seconds = nothing,
         )
     end
-    
+
     row = result[1, :]
     return (
         total = coalesce(row.total, 0),
         completed = coalesce(row.completed, 0),
         failed = coalesce(row.failed, 0),
         running = coalesce(row.running, 0),
-        avg_duration_seconds = row.avg_duration_seconds
+        avg_duration_seconds = row.avg_duration_seconds,
     )
 end
 
@@ -641,26 +806,31 @@ Get histogram of experiment completion percentages.
 """
 function get_completion_histogram(handle::DBHandle, bin_size::Int=10)
     db = ensure_open!(handle)
-    
     bins = zeros(Int, bin_size)
-    
-    result = with_retry(3, 0.01) do
+
+    result = with_retry() do
         DBInterface.execute(
             db,
             """
-            SELECT CAST(current_step AS FLOAT) / total_steps as progress
-            FROM experiments
-            WHERE status IN ('running', 'completed')
+            SELECT
+                e.id,
+                COALESCE(SUM(t.total_steps), 0) as total_steps,
+                COALESCE(SUM(t.current_step), 0) as current_step
+            FROM experiments e
+            LEFT JOIN tasks t ON t.experiment_id = e.id
+            GROUP BY e.id
             """
         ) |> DataFrame
     end
-    
-    for row in eachrow(result)
-        progress = row.progress
-        bin_idx = min(floor(Int, progress * bin_size) + 1, bin_size)
-        bins[bin_idx] += 1
+
+    if result isa DataFrame
+        for row in eachrow(result)
+            progress = row.total_steps > 0 ? row.current_step / row.total_steps : 0.0
+            bin_idx = min(floor(Int, progress * bin_size) + 1, bin_size)
+            bins[bin_idx] += 1
+        end
     end
-    
+
     return bins
 end
 

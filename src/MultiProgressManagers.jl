@@ -1,48 +1,35 @@
 module MultiProgressManagers
-
 using Dates
 using UUIDs
 using Printf
-using Distributed
 using Tachikoma
 
 # Include submodules
 include("database.jl")
 include("types.jl")
 include("api.jl")
-include("distributed.jl")
+include("channel.jl")
 include("dashboard/model.jl")
 include("dashboard/view.jl")
 include("dashboard/update.jl")
-include("dashboard/running_tab.jl")  # Include first for helper functions
-include("dashboard/select_tab.jl")
-include("dashboard/stats_tab.jl")
-include("dashboard/admin_tab.jl")
+include("dashboard/runs_tab.jl")
+include("dashboard/running_tab.jl")
 
 # Re-export from Database
 export Database
 
 # Core types
-export ProgressManager, WorkerProgressMessage
-export ProgressStart, ProgressUpdate, ProgressComplete, ProgressError
+export ProgressManager, TaskStatus, ProgressTask, ProgressUpdate, TaskFinished, ProgressMessage
 
-# User API
-export create_progress_manager, update!, finish!, fail!
-export get_progress, get_speeds, default_db_path
+# API functions
+export create_experiment, update!, finish_task!, finish_experiment!, fail_task!
+export get_task, report_progress!, finish!
+export view_dashboard, default_db_path
 
-# Dashboard
-export view_dashboard, view_folder_dashboard
-export ProgressDashboard
-
-# Distributed
-export DistributedSupport
-export create_worker_task, worker_update!, worker_done!, worker_failed!
-
-# Version info
 const VERSION = v"0.1.0"
 
 function __init__()
-    # Nothing special needed at init time
+    return nothing
 end
 
-end # module MultiProgressManagers
+end # module

@@ -1,7 +1,6 @@
 """
 Main view function for the Tachikoma dashboard.
 """
-
 function Tachikoma.view(m::ProgressDashboard, f::Frame)
     m.tick += 1
     
@@ -33,36 +32,36 @@ function Tachikoma.view(m::ProgressDashboard, f::Frame)
     
     # Content by tab
     @match m.active_tab begin
-        1 => _view_select_tab!(m, content_area, buf)
+        1 => _view_runs_tab!(m, content_area, buf)
         2 => _view_running_tab!(m, content_area, buf)
-        3 => _view_stats_tab!(m, content_area, buf)
-        4 => _view_admin_tab!(m, content_area, buf)
         _ => nothing
     end
-    
+
+    # Mark-as-failed confirmation modal overlay
+    if m.confirm_mark_failed_id !== nothing
+        modal = Modal(
+            title = "Mark as failed?",
+            message = "This experiment is shown as running. Mark it as failed?\n(Useful if the run actually failed but was not updated.)",
+            confirm_label = "Mark failed",
+            cancel_label = "Cancel",
+            selected = m.confirm_modal_selected,
+            tick = m.tick
+        )
+        render(modal, content_area, buf)
+    end
+
     # Status bar
     _render_status_bar!(m, status_area, buf)
 end
 
+#TJ|
 function _render_tab_bar!(m::ProgressDashboard, area::Rect, buf)
     # Build tab labels
-    if m.folder_mode
-        labels = [
-            [Span("1", tstyle(:accent)), Span(" Select", tstyle(:text))],
-            [Span("2", tstyle(:accent)), Span(" Running", tstyle(:text))],
-            [Span("3", tstyle(:accent)), Span(" Stats", tstyle(:text))],
-            [Span("4", tstyle(:accent)), Span(" Admin", tstyle(:text))],
-        ]
-        active_idx = m.active_tab
-    else
-        # Single file mode - skip selector
-        labels = [
-            [Span("1", tstyle(:accent)), Span(" Running", tstyle(:text))],
-            [Span("2", tstyle(:accent)), Span(" Stats", tstyle(:text))],
-            [Span("3", tstyle(:accent)), Span(" Admin", tstyle(:text))],
-        ]
-        active_idx = max(1, m.active_tab - 1)  # Adjust for skipped tab, ensure at least 1
-    end
+    labels = [
+        [Span("1", tstyle(:accent)), Span(" Runs", tstyle(:text))],
+        [Span("2", tstyle(:accent)), Span(" Details", tstyle(:text))],
+    ]
+    active_idx = clamp(m.active_tab, 1, 2)
     
     render(TabBar(labels; active = active_idx), area, buf)
 end
@@ -72,13 +71,7 @@ function _render_status_bar!(m::ProgressDashboard, area::Rect, buf)
     si = mod1(m.tick ÷ 3, length(SPINNER_BRAILLE))
     
     # Connection info
-    db_name = if m.folder_mode && m.selected_db_index > 0
-        basename(m.available_dbs[m.selected_db_index])
-    elseif !isempty(m.db_path)
-        basename(m.db_path)
-    else
-        "None"
-    end
+    db_name = !isempty(m.db_path) ? basename(m.db_path) : "None"
     
     # Running count
     running_count = count(e -> e.status == :running, m.running_experiments)
@@ -93,9 +86,14 @@ function _render_status_bar!(m::ProgressDashboard, area::Rect, buf)
         Span("poll: $(m.poll_frequency_ms)ms", tstyle(:text_dim)),
     ]
     
+    right_parts = ["[1-2] tabs  [Tab] focus  [q]uit  [↑↓]nav"]
+    if m.active_tab == 1 && m.confirm_mark_failed_id === nothing
+        push!(right_parts, "  [f] mark failed")
+    end
     right = [
-        Span("[1-4] tabs  [q]uit  [↑↓]nav", tstyle(:text_dim))
+        Span(join(right_parts), tstyle(:text_dim))
     ]
     
     render(StatusBar(left = left, right = right), area, buf)
 end
+
