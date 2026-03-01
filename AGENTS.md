@@ -462,3 +462,22 @@ CREATE TABLE tasks (
 - Speed calculated as: current_step / (last_updated - started_at)
 - Each experiment can have multiple parallel sub-tasks
 - Current state only - previous progress updates are not retained
+
+## Cursor Cloud specific instructions
+
+### Quick reference
+
+| Action | Command |
+|---|---|
+| Instantiate deps | `julia --project=. -e 'using Pkg; Pkg.instantiate()'` |
+| Run tests | `julia --project=. -e 'using Pkg; Pkg.test()'` |
+| Load package | `julia --project=. -e 'using MultiProgressManagers'` |
+
+### Environment notes
+
+- Julia is installed via `juliaup` (release channel, currently 1.12.5) at `~/.juliaup/bin`. Ensure `PATH` includes this directory.
+- The project requires Julia >= 1.12 (`julia = "1.12"` in `[compat]`).
+- `Tachikoma.jl` is **not** a registered package. It is sourced from `https://github.com/kahliburke/Tachikoma.jl`. If the Manifest.toml is missing or stale, run `julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/kahliburke/Tachikoma.jl")'` before `Pkg.instantiate()`.
+- Tests use `ParallelTestRunner` and run 3 test files in parallel: `core.jl`, `aqua.jl`, `jet.jl`. All 24 tests should pass.
+- No linter is configured. JET.jl and Aqua.jl checks run as part of the test suite.
+- This is a library — there is no dev server. The Tachikoma dashboard (`view_dashboard(db_path)` or `bin/mpm.jl`) requires a real terminal (TTY) and cannot be tested headlessly in a cloud agent environment.
