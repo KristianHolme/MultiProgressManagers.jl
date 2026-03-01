@@ -51,7 +51,7 @@ jobs:
         uses: julia-actions/cache@v2
 
       - name: Instantiate dependencies
-        run: julia --color=yes --project=. -e 'using Pkg; Pkg.instantiate()'
+        run: julia --color=yes --project=. -e 'using Pkg; Pkg.add(url = "https://github.com/kahliburke/Tachikoma.jl"); Pkg.instantiate()'
 
       - name: Run tests
         run: julia --color=yes --project=. -e 'using Pkg; Pkg.test(; coverage=true)'
