@@ -66,7 +66,7 @@ function _current_slot(channels::Vector{Any}, ::Val{:remote})
 end
 
 function _ensure_channels_vector!(::Nothing, manager::ProgressManager)
-    vec = [nothing, nothing]
+    vec = Any[nothing, nothing]
     manager._channels = vec
     return vec
 end

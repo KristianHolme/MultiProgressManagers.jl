@@ -42,3 +42,6 @@ branch = "tachikoma-rewrite"
 
 [targets]
 test = ["Test"]
+
+[apps]
+mpm = { submodule = "CLI" }
