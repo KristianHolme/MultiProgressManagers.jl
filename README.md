@@ -14,9 +14,14 @@ A lightweight progress tracking system for Julia with a Tachikoma.jl-based dashb
 
 ## Installation
 
+This package is not yet registered. Add it from the `tachikoma-rewrite` branch:
+
 ```julia
 using Pkg
-Pkg.add("MultiProgressManagers")
+# From git (replace with your repo URL):
+Pkg.add(url = "https://github.com/<owner>/MultiProgressManagers.jl", rev = "tachikoma-rewrite")
+# Or from a local clone:
+# Pkg.develop(path = "/path/to/MultiProgressManagers")
 ```
 
 ## Quick Start
@@ -221,11 +226,14 @@ mpm ./progresslogs/experiment1.db
 mpm --help
 ```
 
-Install the CLI:
-```bash
-julia --project -e 'using Pkg; Pkg.add("MultiProgressManagers")'
-# Then add to PATH or create alias
+Install the CLI (installs the `mpm` executable to `~/.julia/bin`). The package must already be in your environment (see Installation above; use the `tachikoma-rewrite` branch):
+
+```julia
+using Pkg
+Pkg.Apps.add("https://github.com/KristianHolme/MultiProgressManagers.jl", rev = "tachikoma-rewrite")
 ```
+
+Ensure `~/.julia/bin` is on your PATH. Then run `mpm <db_path>` or `mpm --help`.
 
 ## Keyboard Shortcuts
 
