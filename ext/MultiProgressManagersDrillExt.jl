@@ -1,11 +1,10 @@
 module MultiProgressManagersDrillExt
 
 using MultiProgressManagers
-import MultiProgressManagers: create_dril_callback
 import Drill
 using Distributed
 
-export DrillWorkerProgressCallback
+export DrillWorkerProgressCallback, create_dril_callback
 
 mutable struct DrillWorkerProgressCallback <: Drill.AbstractCallback
     worker_channel::RemoteChannel{Channel{ProgressMessage}}
