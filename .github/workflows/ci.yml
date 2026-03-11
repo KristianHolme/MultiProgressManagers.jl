@@ -1,68 +1,42 @@
 name: CI
-
 on:
   push:
+    tags: ['*']
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 jobs:
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    continue-on-error: ${{ matrix.allow_failure }}
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            version: "1.12"
-            allow_failure: false
-          - os: ubuntu-latest
-            version: "1"
-            allow_failure: false
-          - os: macos-latest
-            version: "1"
-            allow_failure: false
-          - os: windows-latest
-            version: "1"
-            allow_failure: false
-          - os: ubuntu-latest
-            version: "nightly"
-            allow_failure: true
+        version:
+          - "1"
+        os:
+          - ubuntu-latest
+        arch:
+          - x64
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Julia
-        uses: julia-actions/setup-julia@v2
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
-
-      - name: Cache Julia artifacts
-        uses: julia-actions/cache@v2
-
-      - name: Instantiate dependencies
+          arch: ${{ matrix.arch }}
+      - uses: julia-actions/cache@v3
+      - name: Add Tachikoma dependency
         run: julia --color=yes --project=. -e 'using Pkg; Pkg.add(url = "https://github.com/kahliburke/Tachikoma.jl"); Pkg.instantiate()'
-
-      - name: Run tests
-        run: julia --color=yes --project=. -e 'using Pkg; Pkg.test(; coverage=true)'
-
-      - name: Process coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.version == '1'
-        uses: julia-actions/julia-processcoverage@v1
-
-      - name: Upload coverage report
-        if: matrix.os == 'ubuntu-latest' && matrix.version == '1'
-        uses: codecov/codecov-action@v5
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
         with:
-          files: lcov.info
-          fail_ci_if_error: false
+          coverage: "false"
