@@ -21,11 +21,11 @@ Drill = "49b37b9d-a8e6-4364-9144-4677bcb8a7f0"
 MultiProgressManagersDrillExt = "Drill"
 
 [compat]
-Dates = "1"
 DBInterface = "2"
 DataFrames = "1"
-Drill = "0"
+Dates = "1"
 Distributed = "1"
+Drill = "0"
 Match = "2"
 Printf = "1"
 SQLite = "1"
@@ -33,6 +33,9 @@ Tachikoma = "1"
 Test = "1"
 UUIDs = "1"
 julia = "1.12"
+
+[apps.mpm]
+submodule = "CLI"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
@@ -42,6 +45,3 @@ branch = "tachikoma-rewrite"
 
 [targets]
 test = ["Test"]
-
-[apps]
-mpm = { submodule = "CLI" }
