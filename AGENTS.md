@@ -477,7 +477,7 @@ CREATE TABLE tasks (
 
 - Julia is installed via `juliaup` (release channel, currently 1.12.5) at `~/.juliaup/bin`. Ensure `PATH` includes this directory.
 - The project requires Julia >= 1.12 (`julia = "1.12"` in `[compat]`).
-- `Tachikoma.jl` is **not** a registered package. It is sourced from `https://github.com/kahliburke/Tachikoma.jl`. If the Manifest.toml is missing or stale, run `julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/kahliburke/Tachikoma.jl")'` before `Pkg.instantiate()`.
+- `Tachikoma.jl` is a registered package in the General registry.
 - Tests use `ParallelTestRunner` and run 3 test files in parallel: `core.jl`, `aqua.jl`, `jet.jl`. All 24 tests should pass.
 - No linter is configured. JET.jl and Aqua.jl checks run as part of the test suite.
 - This is a library — there is no dev server. The Tachikoma dashboard (`view_dashboard(db_path)` or `bin/mpm.jl`) requires a real terminal (TTY) and cannot be tested headlessly in a cloud agent environment.
