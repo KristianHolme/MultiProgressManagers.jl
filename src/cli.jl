@@ -21,6 +21,7 @@ function _help_text()
       [1-2]     Switch tabs (Runs, Details)
       [↑↓]      Navigate lists
       [Enter]   Select / Open
+      [r]       Refresh experiment list
       [q]       Quit
     """
 end

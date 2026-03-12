@@ -66,7 +66,9 @@ end
     poll_frequency_ms::Int = 500  # Default: poll DB twice per second
     _last_poll::Float64 = 0.0
     _poll_timer::Float64 = 0.0
-    
+    folder_discovery_interval_ms::Int = 5000  # Folder mode: re-scan for .db files at this interval
+    _last_folder_discover::Float64 = 0.0
+
     # Configurable speed calculation window
     speed_window_seconds::Float64 = 30.0
     
@@ -195,6 +197,7 @@ Launch a Tachikoma dashboard for viewing experiment progress.
 - `db_path::String`: Path to experiment database file, or folder containing .db files
 - `poll_frequency_ms::Int=500`: How often to poll database for updates (lower = more frequent)
 - `speed_window_seconds::Real=30`: Time window for short-horizon speed calculation
+- `folder_discovery_interval_ms::Int=5000`: In folder mode, how often to re-scan for new .db files
 
 # Examples
 ```julia
@@ -205,7 +208,7 @@ view_dashboard("./progresslogs/experiment1.db")
 view_dashboard("./progresslogs/")
 ```
 """
-function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_window_seconds::Real=30)
+function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_window_seconds::Real=30, folder_discovery_interval_ms::Int=5000)
     # Determine if it's a folder or file
     folder_mode = isdir(db_path)
     
@@ -240,6 +243,7 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
         available_dbs = available_dbs,
         active_tab = active_tab,
         poll_frequency_ms = poll_frequency_ms,
+        folder_discovery_interval_ms = folder_discovery_interval_ms,
         speed_window_seconds = speed_window_seconds,
     )
 
@@ -270,6 +274,24 @@ function _poll_database!(m::ProgressDashboard)
         return
     end
     m._last_poll = current_time
+
+    # Folder mode: re-discover .db files at relaxed interval so new experiments appear
+    if m.folder_mode && (current_time - m._last_folder_discover) * 1000 >= m.folder_discovery_interval_ms
+        new_dbs = _discover_db_files(m.folder_path)
+        removed = setdiff(m.available_dbs, new_dbs)
+        added = setdiff(new_dbs, m.available_dbs)
+        for path in removed
+            if haskey(m.db_handles, path)
+                Database.close_db!(m.db_handles[path])
+                delete!(m.db_handles, path)
+            end
+        end
+        for path in added
+            m.db_handles[path] = Database.init_db!(path)
+        end
+        m.available_dbs = new_dbs
+        m._last_folder_discover = current_time
+    end
 
     handle_pairs = _dashboard_handle_pairs(m)
     isempty(handle_pairs) && return
@@ -434,5 +456,17 @@ end
 
 function format_datetime(dt::Union{DateTime,Missing})::String
     ismissing(dt) && return "Unknown"
+    return Dates.format(dt, "HH:MM:SS")
+end
+
+"""
+Format datetime for the Started column in tab 1. When include_date is true
+(e.g. oldest experiment was not started today), include date to disambiguate.
+"""
+function format_datetime_for_started_column(dt::Union{DateTime,Missing}, include_date::Bool)::String
+    ismissing(dt) && return "Unknown"
+    if include_date
+        return Dates.format(dt, "yyyy-mm-dd HH:MM")
+    end
     return Dates.format(dt, "HH:MM:SS")
 end

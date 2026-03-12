@@ -36,6 +36,11 @@ function Tachikoma.update!(m::ProgressDashboard, evt::KeyEvent)
         m.quit = true
         return
     end
+    if evt.key == :char && evt.char == 'r'
+        m._last_poll = 0.0
+        m._last_folder_discover = 0.0
+        return
+    end
     # Tab switching
     max_tab = 2
 
