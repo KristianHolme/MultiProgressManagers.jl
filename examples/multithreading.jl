@@ -12,6 +12,15 @@
 using MultiProgressManagers
 using Base.Threads
 
+# Generate unique database path (appends _2, _3, etc. if file exists)
+base_db_path = "./progresslogs/multithreading.db"
+db_path = base_db_path
+counter = 2
+while isfile(db_path)
+    global db_path = replace(base_db_path, ".db" => "_$counter.db")
+    global counter += 1
+end
+
 function worker_task(task_num::Int, total_steps::Int, manager::ProgressManager)
     """Simulate work for a task with progress updates and phase messages."""
     for step in 1:total_steps
@@ -34,7 +43,7 @@ function worker_task(task_num::Int, total_steps::Int, manager::ProgressManager)
 
     # Mark task as complete
     finish!(manager, task_num)
-    println("  Task $task_num complete ($(total_steps) steps)")
+    return println("  Task $task_num complete ($(total_steps) steps)")
 end
 
 function main()
@@ -42,51 +51,52 @@ function main()
     println("Multithreading Progress Tracking Example")
     println("="^60)
     println()
-    
+
     # Check thread count
     println("Running with $(nthreads()) threads")
     println()
-    
+
     # Configuration
     num_tasks = 40
-    db_path = "./progresslogs/multithreading.db"
-    
-    # Create experiment
+
+    # Create experiment (per-task descriptions show in dashboard "Desc" column)
     println("Creating experiment with $num_tasks tasks...")
+    task_descriptions = ["Thread $i" for i in 1:num_tasks]
     manager = ProgressManager(
         "Multithreading Demo",
         num_tasks;
         description = "40 concurrent tasks with random durations (1-4 min each)",
-        db_path = db_path
+        db_path = db_path,
+        task_descriptions = task_descriptions,
     )
     println("  Experiment ID: $(manager.experiment_id)")
     println()
-    
+
     # Generate random durations for each task (~1-4 minutes worth of steps)
     task_durations = rand(80:240, num_tasks)
     println("Task durations: ~$(minimum(task_durations))-$(maximum(task_durations)) steps each (~1-4 min)")
     println()
-    
+
     # Launch all tasks concurrently using @spawn
     println("Starting all $num_tasks tasks...")
     tasks = Vector{Task}(undef, num_tasks)
-    
+
     for task_num in 1:num_tasks
         total_steps = task_durations[task_num]
         tasks[task_num] = @spawn worker_task(task_num, total_steps, manager)
     end
-    
+
     println("  All tasks spawned, waiting for completion...")
     println()
-    
+
     # Wait for all tasks to complete
     for task_num in 1:num_tasks
         wait(tasks[task_num])
     end
-    
+
     # Finish experiment
     finish!(manager)
-    
+
     println()
     println("="^60)
     println("All tasks completed!")
@@ -96,7 +106,7 @@ function main()
     println("  ./bin/mpm.jl $db_path")
     println("Or:")
     println("  julia -e 'using MultiProgressManagers; view_dashboard(\"$db_path\")'")
-    println()
+    return println()
 end
 
 main()

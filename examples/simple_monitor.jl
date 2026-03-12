@@ -5,8 +5,22 @@
 
 using MultiProgressManagers
 
-# Create experiment with 5 tasks using the new constructor
-manager = ProgressManager("Simple Monitor", 5; db_path="./progresslogs/simple_monitor.db")
+# Generate unique database path (appends _2, _3, etc. if file exists)
+base_db_path = "./progresslogs/simple_monitor.db"
+db_path = base_db_path
+counter = 2
+while isfile(db_path)
+    global db_path = replace(base_db_path, ".db" => "_$counter.db")
+    global counter += 1
+end
+
+# Create experiment with 5 tasks (task_descriptions appear in dashboard "Desc" column)
+manager = ProgressManager(
+    "Simple Monitor",
+    5;
+    db_path = db_path,
+    task_descriptions = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"],
+)
 
 println("Running 5 tasks...")
 
@@ -26,4 +40,4 @@ end
 finish!(manager)
 
 println()
-println("Done! View with: mpm ./progresslogs/simple_monitor.db")
+println("Done! View with: mpm $db_path")

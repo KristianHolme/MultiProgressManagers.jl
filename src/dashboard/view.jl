@@ -86,9 +86,11 @@ function _render_status_bar!(m::ProgressDashboard, area::Rect, buf)
         Span("poll: $(m.poll_frequency_ms)ms", tstyle(:text_dim)),
     ]
     
-    right_parts = ["[1-2] tabs  [Tab] focus  [q]uit  [r]efresh  [↑↓]nav"]
+    right_parts = ["[1-2] tabs  [q]uit  [r]efresh  [↑↓]nav"]
     if m.active_tab == 1 && m.confirm_mark_failed_id === nothing
         push!(right_parts, "  [f] mark failed")
+    elseif m.active_tab == 2
+        push!(right_parts, "  [a/d] divider")
     end
     right = [
         Span(join(right_parts), tstyle(:text_dim))

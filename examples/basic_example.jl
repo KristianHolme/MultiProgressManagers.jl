@@ -5,8 +5,17 @@
 
 using MultiProgressManagers
 
-# Create experiment with 5 tasks using the new constructor
-manager = ProgressManager("Basic Example", 5; db_path = "./progresslogs/basic.db")
+# Generate unique database path (appends _2, _3, etc. if file exists)
+base_db_path = "./progresslogs/basic.db"
+db_path = base_db_path
+counter = 2
+while isfile(db_path)
+    global db_path = replace(base_db_path, ".db" => "_$counter.db")
+    global counter += 1
+end
+
+# Create experiment with 5 tasks (no task_descriptions; dashboard "Desc" column will be empty)
+manager = ProgressManager("Basic Example", 5; db_path = db_path)
 
 # Simulate work for each task
 for task_num in 1:5
@@ -21,7 +30,7 @@ end
 # Complete the entire experiment
 finish!(manager)
 
-println("Done! View with: view_dashboard(\"./progresslogs/basic.db\")")
+println("Done! View with: view_dashboard(\"$db_path\")")
 # Notes:
 # - The API uses the new constructor: ProgressManager(name, num_tasks; db_path=...)
 # - update!(manager, task_number; step=..., total_steps=...)

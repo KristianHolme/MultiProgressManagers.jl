@@ -6,6 +6,15 @@
 
 using MultiProgressManagers
 
+# Generate unique database path (appends _2, _3, etc. if file exists)
+base_db_path = "./progresslogs/multi_task_demo.db"
+db_path = base_db_path
+counter = 2
+while isfile(db_path)
+    global db_path = replace(base_db_path, ".db" => "_$counter.db")
+    global counter += 1
+end
+
 # Simulate work on a single task
 function simulate_task_work(task_num::Int, step::Int, total_steps::Int)
     # Variable sleep time to simulate different workloads
@@ -33,15 +42,16 @@ function main()
     # Configuration
     num_tasks = 10
     steps_per_task = 100
-    db_path = "./progresslogs/multi_task_demo.db"
 
-    # Create the multi-task experiment
+    # Create the multi-task experiment (with per-task descriptions for dashboard "Desc" column)
     println("Creating experiment with $num_tasks tasks...")
+    task_descriptions = ["Pipeline stage $i" for i in 1:num_tasks]
     manager = ProgressManager(
         "Multi-Task Demo",
         num_tasks;
         description = "Demonstration of $num_tasks parallel tasks with progress tracking",
-        db_path = db_path
+        db_path = db_path,
+        task_descriptions = task_descriptions,
     )
     println("✓ Experiment created: $(manager.experiment_id)")
     println()
@@ -58,7 +68,6 @@ function main()
         for step in 1:steps_per_task
             simulate_task_work(task_num, step, steps_per_task)
 
-            # Update progress for this specific task
             # Update progress for this specific task
             update!(manager, task_num; step = step, total_steps = steps_per_task)
 
@@ -88,7 +97,7 @@ function main()
     println("Or from Julia:")
     println("  using MultiProgressManagers")
     println("  view_dashboard(\"$db_path\")")
-    println("="^60)
+    return println("="^60)
 end
 
 # Run if executed directly
