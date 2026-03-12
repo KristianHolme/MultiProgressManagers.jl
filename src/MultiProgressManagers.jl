@@ -25,7 +25,7 @@ export ProgressManager, TaskStatus, ProgressTask, ProgressUpdate, TaskFinished, 
 # API functions
 export create_experiment, update!, finish!, fail!
 export finish_task!, finish_experiment!, fail_task!
-export get_task, report_progress!
+export get_task
 export view_dashboard, default_db_path
 
 const VERSION = v"0.1.0"
