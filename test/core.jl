@@ -82,6 +82,58 @@ end
     end
 end
 
+@testset "Default experiment DB path reuses existing experiment by name" begin
+    temp_root = mktempdir()
+    try
+        cd(temp_root) do
+            mkpath("progresslogs")
+
+            manager = MPM.ProgressManager("Duplicate Name", 1)
+            try
+                @test manager.db_path == joinpath("./progresslogs", "duplicate_name.db")
+                @test isfile(manager.db_path)
+                MPM.update!(manager, 1, 3; total_steps = 5, message = "resume progress")
+                Database.close_db!(manager.db_handle)
+
+                resumed_manager = MPM.ProgressManager("Duplicate Name", 1)
+                try
+                    @test resumed_manager.db_path == manager.db_path
+                    @test resumed_manager.experiment_id == manager.experiment_id
+                    @test resumed_manager.start_time == manager.start_time
+                    @test resumed_manager.task_status[1].current_step == 3
+                    @test resumed_manager.task_status[1].total_steps == 5
+                finally
+                    Database.close_db!(resumed_manager.db_handle)
+                end
+            finally
+                Database.close_db!(manager.db_handle)
+            end
+        end
+    finally
+        rm(temp_root; force = true, recursive = true)
+    end
+end
+
+@testset "Each database file can only contain one experiment" begin
+    test_db = tempname() * ".db"
+    manager = MPM.create_experiment("FirstExperiment", 1; db_path = test_db)
+    try
+        Database.close_db!(manager.db_handle)
+        resumed_manager = MPM.create_experiment("FirstExperiment", 1; db_path = test_db)
+        try
+            @test resumed_manager.experiment_id == manager.experiment_id
+        finally
+            Database.close_db!(resumed_manager.db_handle)
+        end
+
+        @test_throws Exception MPM.create_experiment("SecondExperiment", 1; db_path = test_db)
+        @test_throws Exception MPM.create_experiment("FirstExperiment", 2; db_path = test_db)
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
 @testset "Dashboard: mock inputs and headless rendering" begin
     test_db = tempname() * ".db"
     manager = MPM.create_experiment("DashMock", 3; db_path = test_db)
@@ -140,6 +192,54 @@ end
     finally
         Database.close_db!(manager.db_handle)
         rm(test_db, force = true)
+    end
+end
+
+@testset "Folder dashboards aggregate all database files" begin
+    folder = mktempdir()
+    db_one = joinpath(folder, "alpha.db")
+    db_two = joinpath(folder, "beta.db")
+
+    manager_one = MPM.create_experiment("FolderAlpha", 2; db_path = db_one)
+    manager_two = MPM.create_experiment("FolderBeta", 2; db_path = db_two)
+
+    try
+        MPM.update!(manager_one, 1, 1; total_steps = 3, message = "first-db message")
+        MPM.update!(manager_two, 1, 2; total_steps = 4, message = "second-db message")
+
+        dashboard = MPM.ProgressDashboard(
+            db_path = folder,
+            db_handles = Dict(
+                db_one => manager_one.db_handle,
+                db_two => manager_two.db_handle,
+            ),
+            folder_mode = true,
+            folder_path = folder,
+            available_dbs = [db_one, db_two],
+            poll_frequency_ms = 0,
+        )
+        MPM._poll_database!(dashboard)
+
+        @test length(dashboard.admin_experiments) == 2
+        @test length(dashboard.running_experiments) == 2
+        @test sort!(getfield.(dashboard.admin_experiments, :source_db_path)) == sort!([db_one, db_two])
+        @test MPM.CLI._resolve_dashboard_path(folder) == folder
+
+        dashboard.active_tab = 2
+        dashboard.selected_experiment_id = manager_two.experiment_id
+
+        backend = TK.TestBackend(130, 36)
+        frame = _frame_for_backend(backend)
+        TK.view(dashboard, frame)
+
+        @test _buffer_contains(backend, "Tasks for FolderBeta")
+        @test _buffer_contains(backend, "second-db message")
+    finally
+        Database.close_db!(manager_one.db_handle)
+        Database.close_db!(manager_two.db_handle)
+        rm(db_one, force = true)
+        rm(db_two, force = true)
+        rm(folder; force = true, recursive = true)
     end
 end
 

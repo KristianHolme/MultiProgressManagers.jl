@@ -91,10 +91,10 @@ function _view_task_histogram!(m::ProgressDashboard, area::Rect, buf::Buffer)
         return
     end
 
-    if m.db_handle === nothing
+    handle = _handle_for_experiment(m, exp_id)
+    if handle === nothing
         return
     end
-    handle = m.db_handle::Database.DBHandle
 
     # 2. Query tasks
     tasks = Database.get_experiment_tasks(handle, exp_id)
