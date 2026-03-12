@@ -30,9 +30,12 @@ mutable struct DBHandle
 end
 
 function _open_new_db(path::String)
+    is_new_database = !isfile(path) || filesize(path) == 0
     db = SQLite.DB(path)
-    DBInterface.execute(db, "PRAGMA journal_mode = WAL;")
     DBInterface.execute(db, "PRAGMA busy_timeout = 5000;")
+    if is_new_database
+        DBInterface.execute(db, "PRAGMA journal_mode = WAL;")
+    end
     DBInterface.execute(db, "PRAGMA synchronous = NORMAL;")
     _init_schema!(db)
     return db
@@ -191,13 +194,13 @@ function _maybe_datetime(value::Union{Missing,Nothing,Real})
     return unix2datetime(value)
 end
 
-function _existing_experiment_name(handle::DBHandle)
+function _existing_experiment(handle::DBHandle)
     db = ensure_open!(handle)
     result = with_retry() do
         return DBInterface.execute(
             db,
             """
-            SELECT name
+            SELECT id, name, description, total_tasks, status, started_at
             FROM experiments
             LIMIT 1
             """
@@ -208,12 +211,24 @@ function _existing_experiment_name(handle::DBHandle)
         return nothing
     end
 
-    name = result.name[1]
-    if ismissing(name)
-        return "Unknown"
+    row = result[1, :]
+    return (
+        id = String(row.id),
+        name = ismissing(row.name) ? "Unknown" : String(row.name),
+        description = ismissing(row.description) ? "" : String(row.description),
+        total_tasks = Int(row.total_tasks),
+        status = ismissing(row.status) ? "running" : String(row.status),
+        started_at = Float64(row.started_at),
+    )
+end
+
+function _existing_experiment_name(handle::DBHandle)
+    experiment = _existing_experiment(handle)
+    if experiment === nothing
+        return nothing
     end
 
-    return String(name)
+    return experiment.name
 end
 
 """
@@ -226,12 +241,22 @@ function create_experiment(handle::DBHandle, name::String, total_tasks::Int;
     description::String = ""
 )
     db = ensure_open!(handle)
-    existing_name = _existing_experiment_name(handle)
-    if existing_name !== nothing
-        error(
-            "Database file already contains experiment \"$existing_name\": $(handle.path). " *
-            "Each experiment must use its own DB file."
-        )
+    existing_experiment = _existing_experiment(handle)
+    if existing_experiment !== nothing
+        if existing_experiment.name != name
+            error(
+                "Database file already contains experiment \"$(existing_experiment.name)\": $(handle.path). " *
+                "Each experiment must use its own DB file."
+            )
+        end
+        if existing_experiment.total_tasks != total_tasks
+            error(
+                "Existing experiment \"$name\" in $(handle.path) has $(existing_experiment.total_tasks) tasks, " *
+                "but $total_tasks were requested."
+            )
+        end
+
+        return existing_experiment.id
     end
 
     experiment_id = string(UUIDs.uuid4())

@@ -7,13 +7,18 @@ using DataFrames
 function create_experiment(name::String, total_tasks::Int; description::String = "", db_path::String)
     handle = Database.init_db!(db_path)
     experiment_id = Database.create_experiment(handle, name, total_tasks; description = description)
+    experiment = Database._existing_experiment(handle)
+    if experiment === nothing
+        error("Experiment was not found after opening database: $db_path")
+    end
+
     # Build in-memory task statuses from DB
     df = Database.get_experiment_tasks(handle, experiment_id)
     manager = ProgressManager(
         experiment_id,
         db_path,
-        total_tasks,
-        time(),
+        experiment.total_tasks,
+        experiment.started_at,
         Dict{Int, TaskStatus}(),
         handle,
         nothing,
@@ -146,11 +151,7 @@ function _experiment_db_basename(name::String)
 end
 
 function default_db_path(name::String)
-    db_path = joinpath(_default_db_directory(), _experiment_db_basename(name))
-    if ispath(db_path)
-        error("Experiment database already exists for \"$name\": $db_path")
-    end
-    return db_path
+    return joinpath(_default_db_directory(), _experiment_db_basename(name))
 end
 
 function default_db_path()
