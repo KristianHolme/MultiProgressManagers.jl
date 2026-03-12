@@ -1,4 +1,4 @@
-# ProgressTask channel API: get_task, report_progress!, finish!
+# ProgressTask channel API: get_task, update!, finish!, fail!
 # Single listener reads from a sink; pump tasks forward from local/remote channels into the sink.
 
 using Distributed
@@ -7,22 +7,28 @@ const DEFAULT_CHANNEL_CAPACITY = 64
 
 function _listener_loop(manager::ProgressManager)
     sink = manager._sink
-    finished_count = 0
+    terminal_count = 0
     try
         while true
             msg = take!(sink)
             if msg isa ProgressUpdate
                 update!(
                     manager,
-                    msg.task_number,
-                    msg.current_step;
+                    msg.task_number;
+                    step = msg.current_step,
                     total_steps = msg.total_steps,
                     message = msg.message,
                 )
             elseif msg isa TaskFinished
-                finish_task!(manager, msg.task_number)
-                finished_count += 1
-                if finished_count >= manager.total_tasks
+                finish!(manager, msg.task_number)
+                terminal_count += 1
+                if terminal_count >= manager.total_tasks
+                    break
+                end
+            elseif msg isa TaskFailed
+                fail!(manager, msg.task_number; message = msg.message)
+                terminal_count += 1
+                if terminal_count >= manager.total_tasks
                     break
                 end
             end
@@ -121,7 +127,7 @@ end
     get_task(manager::ProgressManager, task_number::Int, type=:local) -> ProgressTask
 
 Return a ProgressTask for the given task number. Workers use this handle to report progress
-via `report_progress!` and `finish!`; the master runs a single listener that writes to the DB.
+via `update!`, `finish!`, and `fail!`; the master runs a single listener that writes to the DB.
 
 - `type == :local`: uses a plain `Channel` (same process, e.g. multithreading).
 - `type == :remote`: uses a `RemoteChannel` (for `Distributed` workers on other processes).
@@ -137,19 +143,19 @@ function get_task(manager::ProgressManager, task_number::Int, type::Symbol = :lo
 end
 
 """
-    report_progress!(task::ProgressTask, current_step::Int;
-                     total_steps::Union{Int,Nothing}=nothing,
-                     message::String="")
+    update!(task::ProgressTask; step::Int,
+            total_steps::Union{Int,Nothing}=nothing,
+            message::String="")
 
 Send a progress update for this task. The master's listener will call `update!` on the DB.
 """
-function report_progress!(
-    task::ProgressTask,
-    current_step::Int;
+function update!(
+    task::ProgressTask;
+    step::Int,
     total_steps::Union{Int,Nothing} = nothing,
     message::String = "",
 )
-    msg = ProgressUpdate(task.task_number, current_step, total_steps, message)
+    msg = ProgressUpdate(task.task_number, step, total_steps, message)
     put!(task.channel, msg)
     return nothing
 end
@@ -157,9 +163,30 @@ end
 """
     finish!(task::ProgressTask)
 
-Signal that this task is complete. The master's listener will call `finish_task!` on the DB.
+Signal that this task is complete. The master's listener will call `finish!` on the DB.
 """
 function finish!(task::ProgressTask)
     put!(task.channel, TaskFinished(task.task_number))
+    return nothing
+end
+
+"""
+    fail!(task::ProgressTask; message::String="Task failed")
+
+Signal that this task has failed. The master's listener will call `fail!` on the DB.
+"""
+function fail!(task::ProgressTask; message::String = "Task failed")
+    put!(task.channel, TaskFailed(task.task_number, message))
+    return nothing
+end
+
+function fail!(task::ProgressTask, error::Exception; message::Union{String,Nothing} = nothing)
+    resolved_message = message === nothing ? sprint(showerror, error) : message
+    fail!(task; message = resolved_message)
+    return nothing
+end
+
+function fail!(task::ProgressTask, error_message::String)
+    fail!(task; message = error_message)
     return nothing
 end

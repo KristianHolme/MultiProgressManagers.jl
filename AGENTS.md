@@ -4,7 +4,7 @@
 
 MultiProgressManagers.jl is a Julia package for tracking and visualizing progress of long-running computations, especially distributed experiments. It provides:
 
-1. **Progress Tracking API** - Simple interface for recording progress updates (in-process: `update!`, `finish_task!`; workers: `ProgressTask` + `report_progress!`, `finish!`)
+1. **Progress Tracking API** - Simple interface for recording progress updates (in-process: `update!`, `finish!`, `fail!`; workers: `ProgressTask` + `update!`, `finish!`, `fail!`)
 2. **SQLite Persistence** - All progress history stored in SQLite databases
 3. **Tachikoma Dashboard** - Real-time terminal UI for monitoring experiments
 4. **Distributed Support** - Single DB writer on the master; workers get a `ProgressTask` via `get_task(manager, id, :remote)` and send updates over a channel; listener on master applies them to the DB
@@ -18,8 +18,8 @@ src/
 ├── MultiProgressManagers.jl    # Main module, exports
 ├── database.jl                 # SQLite operations, DBHandle, ensure_open!, _get_db, _open_new_db
 ├── types.jl                    # ProgressManager, TaskStatus, ProgressTask, ProgressUpdate, TaskFinished, ProgressMessage
-├── api.jl                      # create_experiment, update!, finish_task!, finish_experiment!, fail_task!
-├── channel.jl                  # get_task, report_progress!, finish!; listener + pump tasks; :local / :remote
+├── api.jl                      # create_experiment, update!, finish!, fail!
+├── channel.jl                  # get_task, update!, finish!, fail!; listener + pump tasks; :local / :remote
 └── dashboard/                  # Tachikoma-based UI
     ├── model.jl                # ProgressDashboard struct, _poll_database!
     ├── view.jl                 # Main view function, tab bar rendering
@@ -254,16 +254,16 @@ top, bottom = split_layout(left_layout, left)
 
 ### ProgressTask and Channel-Based Workers (Single DB Writer)
 
-The **master process** is the only one that touches the DB. Workers (threads or separate processes) never call `update!` or open the database; they receive a **ProgressTask** and send progress over a channel. A single **listener** task on the master reads from a sink channel (fed by pump tasks from local/remote channels) and calls `update!` / `finish_task!` on the ProgressManager.
+The **master process** is the only one that touches the DB. Workers (threads or separate processes) never call manager-side `update!` or open the database; they receive a **ProgressTask** and send progress over a channel. A single **listener** task on the master reads from a sink channel (fed by pump tasks from local/remote channels) and calls `update!` / `finish!` / `fail!` on the `ProgressManager`.
 
 - **Get a task handle:** `task = get_task(manager, task_number, type=:local)` or `get_task(manager, task_number, :remote)`.
   - `:local` uses a plain `Channel` (same process, e.g. `@spawn`).
   - `:remote` uses a `RemoteChannel` (for `Distributed` / `pmap`).
-- **From the worker:** `report_progress!(task, current_step; total_steps=..., message="...")` and `finish!(task)` when done. These only `put!` into the task's channel.
-- **Message types:** `ProgressUpdate(task_number, current_step, total_steps, message)` and `TaskFinished(task_number)`; the listener dispatches on these and updates the DB.
+- **From the worker:** `update!(task; step = current_step, total_steps = ..., message = "...")`, `finish!(task)`, and `fail!(task; message = "...")`. These only `put!` into the task's channel.
+- **Message types:** `ProgressUpdate(task_number, current_step, total_steps, message)`, `TaskFinished(task_number)`, and `TaskFailed(task_number, message)`; the listener dispatches on these and updates the DB.
 - **Implementation:** `channel.jl` defines `_current_slot`, `_ensure_channels_vector!`, `_get_or_create!` (dispatched on slot type for JET), and the listener/pump loops. ProgressManager stores `_channels`, `_sink`, `_listener_task`, `_pump_tasks`, and `_channel_lock`.
 
-Example (Distributed): create `manager`, then `tasks = [get_task(manager, i, :remote) for i in 1:n]`, `pmap(i -> run_worker(tasks[i], ...), 1:n)`, then `finish_experiment!(manager)`. Worker: `run_worker(task, total_steps)` loops steps, calls `report_progress!(task, step; ...)`, then `finish!(task)`.
+Example (Distributed): create `manager`, then `tasks = [get_task(manager, i, :remote) for i in 1:n]`, `pmap(i -> run_worker(tasks[i], ...), 1:n)`, then `finish!(manager)`. Worker: `run_worker(task, total_steps)` loops steps, calls `update!(task; step = step, ...)`, then `finish!(task)`.
 
 ### Database Handle Pattern
 
@@ -345,8 +345,8 @@ When working on this codebase, focus on:
 2. **src/dashboard/view.jl** - Main view routing and tab bar
 3. **src/dashboard/update.jl** - Keyboard event handling
 4. **src/database.jl** - All SQLite operations, retry logic, and dispatch helpers (_get_db, _open_new_db, _close_db)
-5. **src/api.jl** - User-facing API (create_experiment, update!, finish_task!, finish_experiment!, fail_task!)
-6. **src/channel.jl** - ProgressTask API (get_task, report_progress!, finish!), listener loop, pump tasks, _current_slot / _get_or_create! dispatch
+5. **src/api.jl** - User-facing API (create_experiment, update!, finish!, fail!)
+6. **src/channel.jl** - ProgressTask API (`get_task`, `update!`, `finish!`, `fail!`), listener loop, pump tasks, `_current_slot` / `_get_or_create!` dispatch
 
 ## Common Tasks
 
@@ -375,8 +375,8 @@ When working on this codebase, focus on:
 
 1. Master: create `manager = ProgressManager(...)`.
 2. Master: get task handles with `get_task(manager, task_number, :local)` (threads) or `get_task(manager, task_number, :remote)` (Distributed). Precompute e.g. `tasks = [get_task(manager, i, :remote) for i in 1:num_tasks]` if using pmap.
-3. Workers: receive a `ProgressTask`, call `report_progress!(task, step; total_steps=..., message="...")` in the loop, then `finish!(task)` when done. Workers must not call `update!` or touch the DB.
-4. Master: after all work is done, call `finish_experiment!(manager)`. See `examples/distributed_pmap.jl` and `examples/multithreading.jl` (the latter can be adapted to use `get_task(..., :local)` and `report_progress!` / `finish!` instead of `update!` / `finish_task!`).
+3. Workers: receive a `ProgressTask`, call `update!(task; step = step, total_steps = ..., message = "...")` in the loop, then `finish!(task)` when done. Workers must not call manager-side `update!` or touch the DB.
+4. Master: after all work is done, call `finish!(manager)`. See `examples/distributed_pmap.jl` and `examples/multithreading.jl`.
 
 ## References
 
@@ -399,7 +399,7 @@ When working on this codebase, focus on:
 - All database fields can be Missing - handle with ismissing()
 - Dashboard polls database at configurable frequency (default 500ms)
 - Supports both single-file and folder modes
-- **Single DB writer:** Only the process that owns the ProgressManager writes to the DB; workers use ProgressTask + report_progress! / finish! and a channel-backed listener.
+- **Single DB writer:** Only the process that owns the ProgressManager writes to the DB; workers use `ProgressTask` + `update!` / `finish!` / `fail!` and a channel-backed listener.
 - **JET-friendly patterns:** Union{Nothing, T} is handled via multiple dispatch (e.g. _get_db(::Nothing, path) vs _get_db(db::SQLite.DB, path), _current_slot(::Nothing, ...) vs _current_slot(channels::Vector{Any}, ...), _get_or_create!(..., ::Nothing) vs concrete channel type). Use return values of concrete type instead of mutable fields after assignment so the compiler/JET infers narrow types.
 
 ## Simplified Database Schema (MWP)

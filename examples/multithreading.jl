@@ -29,11 +29,11 @@ function worker_task(task_num::Int, total_steps::Int, manager::ProgressManager)
             "finalizing (step $step)"
         end
 
-        update!(manager, task_num, step; total_steps = total_steps, message = msg)
+        update!(manager, task_num; step = step, total_steps = total_steps, message = msg)
     end
 
     # Mark task as complete
-    finish_task!(manager, task_num)
+    finish!(manager, task_num)
     println("  Task $task_num complete ($(total_steps) steps)")
 end
 
@@ -85,7 +85,7 @@ function main()
     end
     
     # Finish experiment
-    finish_experiment!(manager)
+    finish!(manager)
     
     println()
     println("="^60)
