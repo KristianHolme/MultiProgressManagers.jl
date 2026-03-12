@@ -22,14 +22,20 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
     # Header for the list
     header_y = inner.y
     header_style = tstyle(:text_dim, bold = true)
-    
+
+    # If oldest experiment was not started today, show date in Started column
+    today_utc = Dates.Date(Dates.now(Dates.UTC))
+    started_dates = [Dates.Date(exp.started_at) for exp in experiments if !ismissing(exp.started_at)]
+    show_date = !isempty(started_dates) && minimum(started_dates) < today_utc
+    time_col_width = show_date ? 16 : 10
+
     # Column positions
     col_time = inner.x
-    col_name = inner.x + 10
-    col_status = inner.x + 35
-    col_progress = inner.x + 48
-    col_duration = inner.x + 65
-    
+    col_name = inner.x + time_col_width
+    col_status = inner.x + time_col_width + 25
+    col_progress = inner.x + time_col_width + 38
+    col_duration = inner.x + time_col_width + 55
+
     set_string!(buf, col_time, header_y, "Started", header_style)
     set_string!(buf, col_name, header_y, "Name", header_style)
     set_string!(buf, col_status, header_y, "Status", header_style)
@@ -53,14 +59,23 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
         duration_str = format_duration(started_at, finished_at)
         
         # Format label with columns
-        start_time_str = format_datetime(started_at)
+        start_time_str = format_datetime_for_started_column(started_at, show_date)
         progress_str = @sprintf("%d/%d (%.0f%%)", completed_tasks, total_tasks, progress_pct)
-        label = @sprintf("%-10s %-24s %-12s %-18s %-15s",
-                        start_time_str,
-                        length(name) > 23 ? name[1:20] * "..." : name,
-                        status,
-                        progress_str,
-                        duration_str)
+        label = if show_date
+            @sprintf("%-16s %-24s %-12s %-18s %-15s",
+                    start_time_str,
+                    length(name) > 23 ? name[1:20] * "..." : name,
+                    status,
+                    progress_str,
+                    duration_str)
+        else
+            @sprintf("%-10s %-24s %-12s %-18s %-15s",
+                    start_time_str,
+                    length(name) > 23 ? name[1:20] * "..." : name,
+                    status,
+                    progress_str,
+                    duration_str)
+        end
         
         # Style based on status
         style = @match Symbol(status) begin
@@ -96,30 +111,40 @@ function _view_task_histogram!(m::ProgressDashboard, area::Rect, buf::Buffer)
         return
     end
 
-    # 2. Query tasks
+    # 2. Query tasks and compute bins (11 bins: 0-10%, 10-20%, ..., 90-100%, 100%)
     tasks = Database.get_experiment_tasks(handle, exp_id)
-    if isempty(tasks)
-        return
-    end
-    
-    # 3. Calculate bins (11 bins: 0-10%, 10-20%, ..., 90-100%, 100%)
     bins = zeros(Int, 11)
-    for row in eachrow(tasks)
-        total = ismissing(row.total_steps) ? 0 : row.total_steps
-        current = ismissing(row.current_step) ? 0 : row.current_step
-        pct = total > 0 ? current / total : 0.0
-        bin_idx = pct >= 1.0 ? 11 : (floor(Int, pct * 10) + 1)
-        bins[bin_idx] += 1
+    if !isempty(tasks)
+        for row in eachrow(tasks)
+            total = ismissing(row.total_steps) ? 0 : row.total_steps
+            current = ismissing(row.current_step) ? 0 : row.current_step
+            pct = total > 0 ? current / total : 0.0
+            bin_idx = pct >= 1.0 ? 11 : (floor(Int, pct * 10) + 1)
+            bins[bin_idx] += 1
+        end
+    end
+    # If no counts in any bin (no task rows, or all rows had total_steps=0), use experiment row for synthetic "all at 100%"
+    if maximum(bins) == 0
+        exp_row = Database.get_experiment(handle, exp_id)
+        if exp_row === nothing
+            return
+        end
+        status = ismissing(exp_row.status) ? "" : String(exp_row.status)
+        total_tasks = ismissing(exp_row.total_tasks) ? 0 : Int(exp_row.total_tasks)
+        if (status == "completed" || status == "failed") && total_tasks > 0
+            bins[11] = total_tasks
+        else
+            return
+        end
     end
 
-    # 4. Render BarChart
+    # 3. Render BarChart
     labels = ["[0,10)%", "[10,20)%", "[20,30)%", "[30,40)%", "[40,50)%", "[50,60)%", "[60,70)%", "[70,80)%", "[80,90)%", "[90,100)%", "100%"]
     entries = [BarEntry(labels[i], bins[i]) for i in 1:11]
     max_count = maximum(bins)
-    
     chart = BarChart(entries; max_val = (max_count > 0 ? max_count : 1))
-    
     block = Block(title = " Task Completion Distribution ", border_style = tstyle(:border))
     inner_area = render(block, area, buf)
     render(chart, inner_area, buf)
+    return
 end
