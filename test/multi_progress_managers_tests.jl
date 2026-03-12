@@ -103,6 +103,142 @@ end
     close(manager.worker_channel)
 end
 
+@testitem "get_task returns ProgressTask" setup = [CommonImports] begin
+    manager = new_manager(1)
+    task = get_task(manager, 7, :remote)
+    @test task isa ProgressTask
+    @test task.task_number == 7
+    close(manager.main_channel)
+    close(manager.worker_channel)
+end
+
+@testitem "Unified update! with manager and task number" setup = [CommonImports] begin
+    manager = new_manager(2)
+    update!(manager, 7; step = 0, total_steps = 5, message = "starting")
+    update!(manager, 7; step = 3, total_steps = 5, message = "midway")
+
+    status = get_worker_status(manager, 7)
+    @test status.exists == true
+    @test status.counter == 3
+    @test status.total == 5
+    @test manager.main_meter.counter == 0
+
+    finish!(manager, 7; message = "done")
+    @test manager.main_meter.counter == 1
+    @test manager.task_states[7] == :finished
+
+    close(manager.main_channel)
+    close(manager.worker_channel)
+end
+
+@testitem "Unified update! auto-finishes completed task" setup = [CommonImports] begin
+    manager = new_manager(1)
+    update!(manager, 1; step = 4, total_steps = 4, message = "done")
+    @test manager.main_meter.counter == 1
+    @test manager.task_states[1] == :finished
+    close(manager.main_channel)
+    close(manager.worker_channel)
+end
+
+@testitem "Unified update! with ProgressTask" setup = [CommonImports] begin
+    manager = new_manager(1)
+    t_main = create_main_meter_tasks(manager)
+    t_worker = create_worker_meter_task(manager)
+    task = get_task(manager, 11, :local)
+
+    update!(task; step = 1, total_steps = 3, message = "one")
+    update!(task; step = 3, total_steps = 3, message = "done")
+    sleep(0.2)
+
+    status = get_worker_status(manager, 11)
+    @test status.exists == true
+    @test status.counter == 3
+    @test manager.main_meter.counter == 1
+    @test manager.task_states[11] == :finished
+
+    stop!(manager, t_main..., t_worker)
+end
+
+@testitem "Unified finish! with ProgressTask and manager" setup = [CommonImports] begin
+    manager = new_manager(3)
+    t_main = create_main_meter_tasks(manager)
+    t_worker = create_worker_meter_task(manager)
+    task = get_task(manager, 2)
+
+    finish!(task; message = "done")
+    sleep(0.2)
+    @test manager.main_meter.counter == 1
+    @test manager.task_states[2] == :finished
+
+    finish!(manager; message = "all done")
+    @test is_complete(manager)
+
+    stop!(manager, t_main..., t_worker)
+end
+
+@testitem "Unified fail! with manager and task number" setup = [CommonImports] begin
+    manager = new_manager(2)
+    update!(manager, 3; step = 1, total_steps = 4, message = "running")
+    fail!(manager, 3; message = "boom")
+    @test manager.main_meter.counter == 1
+    @test manager.task_states[3] == :failed
+    close(manager.main_channel)
+    close(manager.worker_channel)
+end
+
+@testitem "Unified fail! with ProgressTask and manager" setup = [CommonImports] begin
+    manager = new_manager(2)
+    t_main = create_main_meter_tasks(manager)
+    t_worker = create_worker_meter_task(manager)
+    task = get_task(manager, 5, :remote)
+
+    update!(task; step = 1, total_steps = 4, message = "running")
+    fail!(task; message = "boom")
+    sleep(0.2)
+    @test manager.main_meter.counter == 1
+    @test manager.task_states[5] == :failed
+
+    fail!(manager; message = "manager failed")
+    @test is_complete(manager)
+
+    stop!(manager, t_main..., t_worker)
+end
+
+@testitem "Deprecated wrappers delegate to unified API" setup = [CommonImports] begin
+    manager = new_manager(1)
+    t_main = create_main_meter_tasks(manager)
+    t_worker = create_worker_meter_task(manager)
+    task = get_task(manager, 1)
+
+    redirect_stderr(devnull) do
+        report_progress!(task, 1; total_steps = 2, message = "one")
+    end
+    sleep(0.2)
+    @test get_worker_status(manager, 1).counter == 1
+
+    redirect_stderr(devnull) do
+        finish_task!(manager, 1; message = "done")
+    end
+    @test manager.main_meter.counter == 1
+    stop!(manager, t_main..., t_worker)
+
+    manager2 = new_manager(1)
+    redirect_stderr(devnull) do
+        finish_experiment!(manager2; message = "done")
+    end
+    @test is_complete(manager2)
+    close(manager2.main_channel)
+    close(manager2.worker_channel)
+
+    manager3 = new_manager(1)
+    redirect_stderr(devnull) do
+        fail_task!(manager3, 1, "boom")
+    end
+    @test manager3.main_meter.counter == 1
+    close(manager3.main_channel)
+    close(manager3.worker_channel)
+end
+
 @testitem "Progress step overflow clamp" setup = [CommonImports] begin
     manager = new_manager(1)
     update_progress!(manager, ProgressStart(1, 3, "Worker"))

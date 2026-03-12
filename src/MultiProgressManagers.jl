@@ -2,16 +2,27 @@ module MultiProgressManagers
 
 using Distributed
 using ProgressMeter
+import ProgressMeter: finish!, next!, update!
 
 export MultiProgressManager
 export create_main_meter_tasks
 export create_worker_meter_task
 export update_progress!
+export ProgressTask
+export get_task
+export update!
+export finish!
+export fail!
+export report_progress!
+export finish_task!
+export finish_experiment!
+export fail_task!
 
 export ProgressMessage
 export ProgressStart
 export ProgressStepUpdate
 export ProgressFinished
+export ProgressFailed
 export ProgressStop
 export stop!
 export create_dril_callback
@@ -70,13 +81,27 @@ struct ProgressFinished <: AbstractProgressMessage
 end
 
 """
+    ProgressFailed(id, desc)
+
+Mark worker failure.
+
+# Arguments
+- `id::Int`: Worker or task ID
+- `desc::String`: Final failure message
+"""
+struct ProgressFailed <: AbstractProgressMessage
+    id::Int
+    desc::String
+end
+
+"""
     ProgressStop()
 
 Signal shutdown of the progress system.
 """
 struct ProgressStop <: AbstractProgressMessage end
 
-const ProgressMessage = Union{ProgressStart, ProgressStepUpdate, ProgressStop, ProgressFinished}
+const ProgressMessage = Union{ProgressStart, ProgressStepUpdate, ProgressStop, ProgressFinished, ProgressFailed}
 
 """
     MultiProgressManager
@@ -95,9 +120,20 @@ mutable struct MultiProgressManager
     main_meter::Progress
     worker_meters::Dict{Int, Progress}
     worker2index::Dict{Int, Int}
+    task_states::Dict{Int, Symbol}
     main_channel::RemoteChannel{Channel{Bool}}
     worker_channel::RemoteChannel{Channel{ProgressMessage}}
     io::IO
+end
+
+mutable struct ProgressTask
+    task_number::Int
+    main_channel::RemoteChannel{Channel{Bool}}
+    worker_channel::RemoteChannel{Channel{ProgressMessage}}
+    total_steps::Union{Int, Nothing}
+    current_step::Int
+    started::Bool
+    done::Bool
 end
 
 function MultiProgressManager(n_jobs::Int, tty::Int; kwargs...)
@@ -134,9 +170,22 @@ function MultiProgressManager(n_jobs::Int, io::IO = stderr; main_desc::String = 
     end
     worker_meters = Dict{Int, Progress}()
     worker2index = Dict(worker_id => findfirst(==(worker_id), workers()) for worker_id in workers())
+    task_states = Dict{Int, Symbol}()
     main_channel = RemoteChannel(() -> Channel{Bool}(1024), 1)
     worker_channel = RemoteChannel(() -> Channel{ProgressMessage}(4096), 1)
-    return MultiProgressManager(main_meter, worker_meters, worker2index, main_channel, worker_channel, io)
+    return MultiProgressManager(main_meter, worker_meters, worker2index, task_states, main_channel, worker_channel, io)
+end
+
+"""
+    get_task(manager::MultiProgressManager, task_number::Int, type::Symbol = :local)
+
+Create a task handle that can be sent to local or distributed workers.
+"""
+function get_task(manager::MultiProgressManager, task_number::Int, type::Symbol = :local)
+    if type !== :local && type !== :remote
+        throw(ArgumentError("type must be :local or :remote, got :$type"))
+    end
+    return ProgressTask(task_number, manager.main_channel, manager.worker_channel, nothing, 0, false, false)
 end
 
 """
@@ -286,6 +335,136 @@ function iteration_string(step::Int, progress_bar::Progress)
     return "$(progress_bar.counter + step) / $(progress_bar.n)"
 end
 
+function _task_state(manager::MultiProgressManager, task_number::Int)
+    return get(manager.task_states, task_number, :pending)
+end
+
+function _default_task_desc(task_number::Int)
+    return "Task $(task_number)"
+end
+
+function _default_finish_message(task_number::Int)
+    return "Finished $(_default_task_desc(task_number))"
+end
+
+function _default_fail_message(task_number::Int)
+    return "Failed $(_default_task_desc(task_number))"
+end
+
+function _display_message(message::AbstractString, fallback::String)
+    return isempty(message) ? fallback : String(message)
+end
+
+function _advance_main_meter!(manager::MultiProgressManager)
+    meter = manager.main_meter
+    if meter.counter < meter.n
+        next!(meter; showvalues = [("Jobs", iteration_string(1, meter))])
+    else
+        ProgressMeter.update!(meter, meter.counter; showvalues = [("Jobs", iteration_string(0, meter))])
+    end
+    return nothing
+end
+
+function _complete_main_meter!(manager::MultiProgressManager)
+    meter = manager.main_meter
+    ProgressMeter.update!(meter, meter.n; showvalues = [("Jobs", "$(meter.n) / $(meter.n)")])
+    ProgressMeter.finish!(meter; showvalues = [("Jobs", "$(meter.n) / $(meter.n)")])
+    return nothing
+end
+
+function _mark_task_started!(
+    manager::MultiProgressManager,
+    task_number::Int,
+    total_steps::Int;
+    desc::String = _default_task_desc(task_number),
+)
+    total_steps > 0 || throw(ArgumentError("total_steps must be positive, got $total_steps"))
+    update_progress!(manager, ProgressStart(task_number, total_steps, desc))
+    manager.task_states[task_number] = :running
+    return manager.worker_meters[task_number]
+end
+
+function _ensure_task_meter!(
+    manager::MultiProgressManager,
+    task_number::Int,
+    total_steps::Union{Int, Nothing};
+    desc::String = _default_task_desc(task_number),
+)
+    if haskey(manager.worker_meters, task_number)
+        return manager.worker_meters[task_number]
+    end
+    total_steps === nothing &&
+        throw(ArgumentError("`total_steps` must be provided on the first update for task $(task_number)"))
+    return _mark_task_started!(manager, task_number, total_steps; desc)
+end
+
+function _mark_task_terminal!(
+    manager::MultiProgressManager,
+    task_number::Int,
+    status::Symbol;
+    message::String,
+    advance_main::Bool,
+)
+    previous_status = _task_state(manager, task_number)
+    if previous_status in (:finished, :failed)
+        return nothing
+    end
+
+    if haskey(manager.worker_meters, task_number)
+        meter = manager.worker_meters[task_number]
+        ProgressMeter.finish!(meter; showvalues = [(iteration_string(0, meter), message)])
+    end
+
+    manager.task_states[task_number] = status
+    if advance_main
+        _advance_main_meter!(manager)
+    end
+    return nothing
+end
+
+function _update_task_progress!(
+    manager::MultiProgressManager,
+    task_number::Int;
+    step::Int,
+    total_steps::Union{Int, Nothing},
+    message::String,
+)
+    state = _task_state(manager, task_number)
+    if state in (:finished, :failed)
+        @warn "Task $(task_number) is already $(state); ignoring update."
+        return nothing
+    end
+
+    meter = _ensure_task_meter!(manager, task_number, total_steps)
+    if total_steps !== nothing && total_steps != meter.n
+        @warn "Task $(task_number) already started with total_steps=$(meter.n); ignoring new total_steps=$(total_steps)."
+    end
+
+    clamped_step = max(step, 0)
+    if clamped_step > meter.n
+        @warn "Task $(task_number) step ($(step)) exceeds total_steps ($(meter.n)). Clamping to completion."
+        clamped_step = meter.n
+    end
+
+    delta = clamped_step - meter.counter
+    if delta < 0
+        @warn "Task $(task_number) step ($(clamped_step)) is behind current progress ($(meter.counter)). Ignoring update."
+        return nothing
+    end
+
+    if delta == 0
+        ProgressMeter.update!(meter, meter.counter; showvalues = [(iteration_string(0, meter), message)])
+    else
+        next!(meter; step = delta, showvalues = [(iteration_string(delta, meter), message)])
+    end
+    manager.task_states[task_number] = :running
+
+    if clamped_step == meter.n
+        finish!(manager, task_number; message = _display_message(message, _default_finish_message(task_number)))
+    end
+    return nothing
+end
+
 function update_progress!(manager::MultiProgressManager, message::ProgressStepUpdate)
     if !haskey(manager.worker_meters, message.id)
         @warn "Worker $(message.id) sent ProgressStepUpdate before ProgressStart. Send ProgressStart($(message.id), total_steps, description) first."
@@ -317,6 +496,7 @@ function update_progress!(manager::MultiProgressManager, message::ProgressStart)
         sleep(0.1)
         ProgressMeter.next!(progress, step = 0)
     end
+    manager.task_states[message.id] = :running
     return nothing
 end
 
@@ -330,8 +510,263 @@ function update_progress!(manager::MultiProgressManager, message::ProgressFinish
         @warn "Worker $(message.id) sent ProgressFinished without a progress meter. Was ProgressStart called?"
         return nothing
     end
-    meter = manager.worker_meters[message.id]
-    finish!(meter; showvalues = [(iteration_string(0, meter), message.desc)])
+    _mark_task_terminal!(
+        manager,
+        message.id,
+        :finished;
+        message = _display_message(message.desc, _default_finish_message(message.id)),
+        advance_main = false,
+    )
+    return nothing
+end
+
+function update_progress!(manager::MultiProgressManager, message::ProgressFailed)
+    if !haskey(manager.worker_meters, message.id)
+        @warn "Worker $(message.id) sent ProgressFailed without a progress meter. Was ProgressStart called?"
+        return nothing
+    end
+    _mark_task_terminal!(
+        manager,
+        message.id,
+        :failed;
+        message = _display_message(message.desc, _default_fail_message(message.id)),
+        advance_main = false,
+    )
+    return nothing
+end
+
+"""
+    update!(manager::MultiProgressManager, task_number::Int; step, total_steps = nothing, message = "")
+
+Update a task in-process using an absolute step count.
+"""
+function update!(
+    manager::MultiProgressManager,
+    task_number::Int;
+    step::Int,
+    total_steps::Union{Int, Nothing} = nothing,
+    message::AbstractString = "",
+)
+    _update_task_progress!(manager, task_number; step, total_steps, message = String(message))
+    return nothing
+end
+
+"""
+    update!(task::ProgressTask; step, total_steps = nothing, message = "")
+
+Update a task handle from a worker using an absolute step count.
+"""
+function update!(
+    task::ProgressTask;
+    step::Int,
+    total_steps::Union{Int, Nothing} = nothing,
+    message::AbstractString = "",
+)
+    if task.done
+        @warn "Task $(task.task_number) is already finished; ignoring update."
+        return nothing
+    end
+
+    if !task.started
+        total_steps === nothing &&
+            throw(ArgumentError("`total_steps` must be provided on the first update for task $(task.task_number)"))
+        put!(task.worker_channel, ProgressStart(task.task_number, total_steps, _default_task_desc(task.task_number)))
+        task.total_steps = total_steps
+        task.started = true
+    elseif total_steps !== nothing && total_steps != task.total_steps
+        @warn "Task $(task.task_number) already started with total_steps=$(task.total_steps); ignoring new total_steps=$(total_steps)."
+    end
+
+    if step < task.current_step
+        @warn "Task $(task.task_number) step ($(step)) is behind current progress ($(task.current_step)). Ignoring update."
+        return nothing
+    end
+
+    if task.total_steps !== nothing && step > task.total_steps
+        @warn "Task $(task.task_number) step ($(step)) exceeds total_steps ($(task.total_steps)). Clamping to completion."
+        step = task.total_steps
+    end
+
+    delta = step - task.current_step
+    put!(task.worker_channel, ProgressStepUpdate(task.task_number, delta, String(message)))
+    task.current_step = step
+
+    if task.total_steps !== nothing && task.current_step == task.total_steps
+        finish!(task; message = _display_message(message, _default_finish_message(task.task_number)))
+    end
+    return nothing
+end
+
+"""
+    finish!(manager::MultiProgressManager, task_number::Int; message = "")
+
+Finish a single task in-process.
+"""
+function finish!(
+    manager::MultiProgressManager,
+    task_number::Int;
+    message::AbstractString = "",
+)
+    _mark_task_terminal!(
+        manager,
+        task_number,
+        :finished;
+        message = _display_message(message, _default_finish_message(task_number)),
+        advance_main = true,
+    )
+    return nothing
+end
+
+"""
+    finish!(task::ProgressTask; message = "")
+
+Finish a task handle from a worker.
+"""
+function finish!(task::ProgressTask; message::AbstractString = "")
+    if task.done
+        return nothing
+    end
+
+    if !task.started
+        total_steps = something(task.total_steps, max(task.current_step, 1))
+        put!(task.worker_channel, ProgressStart(task.task_number, total_steps, _default_task_desc(task.task_number)))
+        task.total_steps = total_steps
+        task.started = true
+    end
+
+    put!(task.worker_channel, ProgressFinished(task.task_number, _display_message(message, _default_finish_message(task.task_number))))
+    put!(task.main_channel, true)
+    task.done = true
+    return nothing
+end
+
+"""
+    finish!(manager::MultiProgressManager; message = "")
+
+Finish the full manager.
+"""
+function finish!(manager::MultiProgressManager; message::AbstractString = "")
+    for task_number in keys(manager.worker_meters)
+        if _task_state(manager, task_number) !== :failed
+            _mark_task_terminal!(
+                manager,
+                task_number,
+                :finished;
+                message = _display_message(message, _default_finish_message(task_number)),
+                advance_main = false,
+            )
+        end
+    end
+    for (task_number, state) in manager.task_states
+        if state !== :failed
+            manager.task_states[task_number] = :finished
+        end
+    end
+    _complete_main_meter!(manager)
+    return nothing
+end
+
+"""
+    fail!(manager::MultiProgressManager, task_number::Int; message = "")
+
+Fail a single task in-process.
+"""
+function fail!(
+    manager::MultiProgressManager,
+    task_number::Int;
+    message::AbstractString = "",
+)
+    _mark_task_terminal!(
+        manager,
+        task_number,
+        :failed;
+        message = _display_message(message, _default_fail_message(task_number)),
+        advance_main = true,
+    )
+    return nothing
+end
+
+"""
+    fail!(task::ProgressTask; message = "")
+
+Fail a task handle from a worker.
+"""
+function fail!(task::ProgressTask; message::AbstractString = "")
+    if task.done
+        return nothing
+    end
+
+    if !task.started
+        total_steps = something(task.total_steps, max(task.current_step, 1))
+        put!(task.worker_channel, ProgressStart(task.task_number, total_steps, _default_task_desc(task.task_number)))
+        task.total_steps = total_steps
+        task.started = true
+    end
+
+    put!(task.worker_channel, ProgressFailed(task.task_number, _display_message(message, _default_fail_message(task.task_number))))
+    put!(task.main_channel, true)
+    task.done = true
+    return nothing
+end
+
+"""
+    fail!(manager::MultiProgressManager; message = "")
+
+Fail the full manager.
+"""
+function fail!(manager::MultiProgressManager; message::AbstractString = "")
+    for task_number in keys(manager.worker_meters)
+        _mark_task_terminal!(
+            manager,
+            task_number,
+            :failed;
+            message = _display_message(message, _default_fail_message(task_number)),
+            advance_main = false,
+        )
+    end
+    for task_number in keys(manager.task_states)
+        manager.task_states[task_number] = :failed
+    end
+    _complete_main_meter!(manager)
+    return nothing
+end
+
+function fail!(manager::MultiProgressManager, error::Exception; message::Union{String, Nothing} = nothing)
+    fail!(manager; message = something(message, sprint(showerror, error)))
+    return nothing
+end
+
+function fail!(manager::MultiProgressManager, error_message::AbstractString)
+    fail!(manager; message = String(error_message))
+    return nothing
+end
+
+function report_progress!(
+    task::ProgressTask,
+    step::Int;
+    total_steps::Union{Int, Nothing} = nothing,
+    message::String = "",
+)
+    Base.depwarn("`report_progress!(task, step; ...)` is deprecated; use `update!(task; step, ...)` instead.", :report_progress!)
+    update!(task; step, total_steps, message)
+    return nothing
+end
+
+function finish_task!(manager::MultiProgressManager, task_number::Int; message::String = "")
+    Base.depwarn("`finish_task!(manager, task_number)` is deprecated; use `finish!(manager, task_number)` instead.", :finish_task!)
+    finish!(manager, task_number; message)
+    return nothing
+end
+
+function finish_experiment!(manager::MultiProgressManager; message::String = "")
+    Base.depwarn("`finish_experiment!(manager)` is deprecated; use `finish!(manager)` instead.", :finish_experiment!)
+    finish!(manager; message)
+    return nothing
+end
+
+function fail_task!(manager::MultiProgressManager, task_number::Int, error_message::AbstractString)
+    Base.depwarn("`fail_task!(manager, task_number, message)` is deprecated; use `fail!(manager, task_number; message)` instead.", :fail_task!)
+    fail!(manager, task_number; message = String(error_message))
     return nothing
 end
 

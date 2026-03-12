@@ -13,9 +13,11 @@ The core type, `MultiProgressManager`, owns the shared `Progress` meters and the
 
 ## Key Concepts
 
-- `MultiProgressManager(n_jobs; io=stderr, tty=nothing)` creates the top-level meter plus per-worker bookkeeping. 
-- Workers communicate via `ProgressMessage`s: `ProgressStart`, `ProgressStepUpdate`, `ProgressFinished`, and `ProgressStop`.
-- `create_main_meter_task(manager)` returns a pair of housekeeping tasks; `create_worker_meter_task(manager)` returns the listener task that processes worker messages.
+- `MultiProgressManager(n_jobs; io=stderr, tty=nothing)` creates the top-level meter plus per-worker bookkeeping.
+- Use `update!(manager, task_number; step, total_steps, message)` for in-process updates, or `task = get_task(manager, task_number)` plus `update!(task; ...)` on workers.
+- Use `finish!(manager, task_number)`, `finish!(task)`, or `finish!(manager)` for successful completion. Matching `fail!` methods mark task or manager failure.
+- Workers still communicate via `ProgressMessage`s internally: `ProgressStart`, `ProgressStepUpdate`, `ProgressFinished`, `ProgressFailed`, and `ProgressStop`.
+- `create_main_meter_tasks(manager)` returns a pair of housekeeping tasks; `create_worker_meter_task(manager)` returns the listener task that processes worker messages.
 - `stop!(manager, tasks...)` closes channels and waits for the spawned tasks to finish cleanly.
 
 ### Full example
@@ -26,18 +28,18 @@ using Distributed
 tty = 8 #because the tty command  in my desired output terminal outputs /dev/pts/8
 addprocs(4)
 @everywhere using MultiProgressManagers
-@everywhere function do_work(i::Int, worker_channel::RemoteChannel)
-    put!(worker_channel, ProgressStart(myid(), 10, "Worker $(myid())"))
+@everywhere function do_work(task::ProgressTask, i::Int)
     for j in 1:10
         work_time = rand()*i*0.2
         sleep(work_time)
-        put!(worker_channel, ProgressStepUpdate(myid(), 1, "Work time: $work_time"))
+        update!(task; step = j, total_steps = 10, message = "Work time: $work_time")
         if rand() < 0.05
-            error("Error in worker $i")
+            fail!(task; message = "Error in worker $i")
+            return 0
         end
     end
-    put!(worker_channel, ProgressFinished(myid(), "Finished work!"))
-    return nothing
+    finish!(task; message = "Finished work!")
+    return 1
 end
 
 n_jobs = 20
@@ -45,11 +47,9 @@ manager = MultiProgressManager(n_jobs, tty)
 t_periodic, t_update = create_main_meter_tasks(manager)
 t_worker = create_worker_meter_task(manager)
 
-configs = [(i, manager.main_channel, manager.worker_channel) for i in 1:n_jobs]
-results = pmap(configs, on_error = e -> 0) do (i, main_channel, worker_channel)
-    do_work(i, worker_channel)
-    put!(main_channel, true)
-    return 1
+tasks = [get_task(manager, i, :remote) for i in 1:n_jobs]
+results = pmap(zip(tasks, 1:n_jobs), on_error = e -> 0) do (task, i)
+    return do_work(task, i)
 end
 
 stop!(manager, t_periodic, t_update, t_worker)
