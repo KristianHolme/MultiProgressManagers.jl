@@ -191,6 +191,31 @@ function _maybe_datetime(value::Union{Missing,Nothing,Real})
     return unix2datetime(value)
 end
 
+function _existing_experiment_name(handle::DBHandle)
+    db = ensure_open!(handle)
+    result = with_retry() do
+        return DBInterface.execute(
+            db,
+            """
+            SELECT name
+            FROM experiments
+            LIMIT 1
+            """
+        ) |> DataFrame
+    end
+
+    if isempty(result)
+        return nothing
+    end
+
+    name = result.name[1]
+    if ismissing(name)
+        return "Unknown"
+    end
+
+    return String(name)
+end
+
 """
     create_experiment(handle::DBHandle, name::String, total_tasks::Int;
                       description::String="") -> String
@@ -201,6 +226,14 @@ function create_experiment(handle::DBHandle, name::String, total_tasks::Int;
     description::String = ""
 )
     db = ensure_open!(handle)
+    existing_name = _existing_experiment_name(handle)
+    if existing_name !== nothing
+        error(
+            "Database file already contains experiment \"$existing_name\": $(handle.path). " *
+            "Each experiment must use its own DB file."
+        )
+    end
+
     experiment_id = string(UUIDs.uuid4())
     started_at = _current_timestamp()
 

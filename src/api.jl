@@ -33,8 +33,13 @@ function create_experiment(name::String, total_tasks::Int; description::String =
 end
 
 # Outer constructor for easier creation
-function ProgressManager(experiment_name::String, num_tasks::Int; description::String="", db_path::String="./progresslogs/experiment.db")
-    create_experiment(experiment_name, num_tasks; description=description, db_path=db_path)
+function ProgressManager(
+    experiment_name::String,
+    num_tasks::Int;
+    description::String = "",
+    db_path::String = default_db_path(experiment_name),
+)
+    return create_experiment(experiment_name, num_tasks; description = description, db_path = db_path)
 end
 
 """Update progress for a specific task within a multi-task experiment."""
@@ -81,15 +86,17 @@ end
 # Legacy compatibility functions
 
 function create_progress_manager(name::String, total_steps::Int;
-                                description::String="",
-                                db_path::String=default_db_path(),
-                                update_frequency_ms::Int=100,
-                                speed_window_seconds::Real=30,
-                                worker_count::Int=1)
+    description::String = "",
+    db_path::String = default_db_path(name),
+    update_frequency_ms::Int = 100,
+    speed_window_seconds::Real = 30,
+    worker_count::Int = 1,
+)
     # Delegate to new API
     manager = create_experiment(name, total_steps;
-                                description=description,
-                                db_path=db_path)
+        description = description,
+        db_path = db_path,
+    )
     return manager
 end
 
@@ -115,18 +122,39 @@ function fail!(manager::ProgressManager, error_message::String)
     return nothing
 end
 
-function default_db_path()
-    # Check if ./progresslogs exists
+function _default_db_directory()
     if isdir("./progresslogs")
-        uuid = string(UUIDs.uuid4())
-        return joinpath("./progresslogs", "$uuid.db")
-    else
-        # Use system cache directory
-        cache_dir = get(ENV, "XDG_DATA_HOME", joinpath(homedir(), ".local", "share"))
-        dir = joinpath(cache_dir, "MultiProgressManagers")
-        mkpath(dir)
-        return joinpath(dir, "default.db")
+        return "./progresslogs"
     end
+
+    cache_dir = get(ENV, "XDG_DATA_HOME", joinpath(homedir(), ".local", "share"))
+    dir = joinpath(cache_dir, "MultiProgressManagers")
+    mkpath(dir)
+    return dir
+end
+
+function _experiment_db_basename(name::String)
+    slug = lowercase(strip(name))
+    slug = replace(slug, r"[^a-z0-9]+" => "_")
+    slug = strip(slug, '_')
+
+    if isempty(slug)
+        return "experiment.db"
+    end
+
+    return "$(slug).db"
+end
+
+function default_db_path(name::String)
+    db_path = joinpath(_default_db_directory(), _experiment_db_basename(name))
+    if ispath(db_path)
+        error("Experiment database already exists for \"$name\": $db_path")
+    end
+    return db_path
+end
+
+function default_db_path()
+    return joinpath(_default_db_directory(), "$(UUIDs.uuid4()).db")
 end
 
 function get_progress(manager::ProgressManager)

@@ -5,6 +5,7 @@ Event handling for the dashboard.
 function Tachikoma.update!(m::ProgressDashboard, evt::KeyEvent)
     # Modal open: only handle modal keys
     if m.confirm_mark_failed_id !== nothing
+        confirm_mark_failed_id = m.confirm_mark_failed_id
         if evt.key == :escape || (evt.key == :char && evt.char == 'c')
             m.confirm_mark_failed_id = nothing
             return
@@ -18,9 +19,11 @@ function Tachikoma.update!(m::ProgressDashboard, evt::KeyEvent)
             return
         end
         if evt.key == :enter
-            if m.confirm_modal_selected == :confirm && m.db_handle !== nothing
-                handle = m.db_handle::Database.DBHandle
-                Database.fail_experiment!(handle, m.confirm_mark_failed_id, "Marked as failed from dashboard")
+            if m.confirm_modal_selected == :confirm && confirm_mark_failed_id !== nothing
+                handle = _handle_for_experiment(m, confirm_mark_failed_id)
+                if handle !== nothing
+                    Database.fail_experiment!(handle, confirm_mark_failed_id, "Marked as failed from dashboard")
+                end
             end
             m.confirm_mark_failed_id = nothing
             return
@@ -62,7 +65,7 @@ function _update_runs_tab!(m::ProgressDashboard, evt::KeyEvent)
 
     # [f] mark as failed: open confirmation modal when selection is running
     if evt.key == :char && evt.char == 'f'
-        if m.runs_selected >= 1 && m.runs_selected <= length(m.admin_experiments) && m.db_handle !== nothing
+        if m.runs_selected >= 1 && m.runs_selected <= length(m.admin_experiments)
             exp = m.admin_experiments[m.runs_selected]
             if !ismissing(exp.status) && exp.status == :running && !ismissing(exp.id) && !isempty(exp.id)
                 m.confirm_mark_failed_id = exp.id
