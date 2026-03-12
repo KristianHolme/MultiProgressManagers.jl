@@ -89,6 +89,31 @@ function _message_or_nothing(message::String)
     return message
 end
 
+function _validate_task_update!(
+    ts::TaskStatus,
+    task_number::Int,
+    step::Int,
+    total_steps::Union{Int,Nothing},
+)
+    if step < 0
+        throw(ArgumentError("step must be nonnegative for task $(task_number), got $(step)"))
+    end
+
+    if total_steps !== nothing && total_steps < 0
+        throw(ArgumentError("total_steps must be nonnegative for task $(task_number), got $(total_steps)"))
+    end
+
+    if step < ts.current_step
+        throw(
+            ArgumentError(
+                "step must be monotonic for task $(task_number): previous=$(ts.current_step), new=$(step)",
+            ),
+        )
+    end
+
+    return nothing
+end
+
 """Update progress for a specific task within a multi-task experiment."""
 function update!(
     manager::ProgressManager,
@@ -112,13 +137,13 @@ function update!(
     end
 
     ts = manager.task_status[task_number]
+    _validate_task_update!(ts, task_number, step, total_steps)
     new_total_steps = if total_steps === nothing
         ts.total_steps
     else
         max(total_steps, step)
     end
-    max_step = max(0, step)
-    new_step = new_total_steps > 0 ? min(max_step, new_total_steps) : max_step
+    new_step = new_total_steps > 0 ? min(step, new_total_steps) : step
     new_status = ts.status == "completed" ? "completed" : "running"
     db_total_steps = total_steps === nothing ? nothing : new_total_steps
     Database.update_task!(
