@@ -160,19 +160,6 @@ function update!(
     return nothing
 end
 
-function report_progress!(
-    task::ProgressTask,
-    current_step::Int;
-    total_steps::Union{Int,Nothing} = nothing,
-    message::String = "",
-)
-    Base.depwarn(
-        "`report_progress!(task, step; ...)` is deprecated; use `update!(task; step = ..., total_steps = ..., message = ...)` instead.",
-        :report_progress!,
-    )
-    return update!(task; step = current_step, total_steps = total_steps, message = message)
-end
-
 """
     finish!(task::ProgressTask)
 
