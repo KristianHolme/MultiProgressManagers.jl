@@ -93,7 +93,9 @@ view_dashboard("./progresslogs/experiment1.db")
 ## Dashboard Tabs
 
 ### Tab 1: Runs
+
 Shows all experiments in the database:
+
 - Experiment name and description
 - Status (running/completed/failed)
 - Overall progress across all tasks
@@ -101,7 +103,9 @@ Shows all experiments in the database:
 - Automatically selects the newest experiment at the top of the list
 
 ### Tab 2: Details (Running)
+
 Shows detailed view of selected experiment:
+
 - Individual task progress bars
 - Task status (pending/running/completed/failed)
 - Current step / total steps for each task
@@ -119,6 +123,7 @@ ProgressManager(name::String, num_tasks::Int;
 ```
 
 **Parameters:**
+
 - `name`: Human-readable experiment name (shown in dashboard)
 - `num_tasks` / `total_tasks`: Number of parallel sub-tasks in this experiment
 - `description`: Optional longer description
@@ -140,6 +145,7 @@ update!(manager::ProgressManager, task_number::Int;
 Records progress for a specific task. Optionally pass `total_steps` and `message`; the message is shown in the dashboard Details tab. When `total_steps` is omitted, the previously stored total is reused.
 
 **Parameters:**
+
 - `manager`: The ProgressManager for this experiment
 - `task_number`: 1-indexed task number (1 to total_tasks)
 - `step`: Current progress step for this task
@@ -155,6 +161,7 @@ get_task(manager::ProgressManager, task_number::Int, type = :local) -> ProgressT
 ```
 
 Returns a handle for one task. `type`:
+
 - `:local` — plain `Channel` (same process, e.g. `@spawn`)
 - `:remote` — `RemoteChannel` (for `Distributed` / `pmap`)
 
@@ -199,6 +206,7 @@ Mark either a specific task or the entire experiment as failed with a message.
 The SQLite database uses a simplified 2-table schema:
 
 ### experiments table
+
 - `id`: UUID primary key
 - `name`: Experiment name
 - `description`: Optional description
@@ -209,6 +217,7 @@ The SQLite database uses a simplified 2-table schema:
 - `final_message`: Optional message (e.g. "Completed successfully" or error)
 
 ### tasks table
+
 - `id`: UUID primary key
 - `experiment_id`: Foreign key to experiments table
 - `task_number`: 1-indexed position in task list
@@ -243,6 +252,7 @@ Ensure `~/.julia/bin` is on your PATH. Then run `mpm <db_path>` or `mpm --help`.
 ## Keyboard Shortcuts
 
 In the dashboard:
+
 - `1-2`: Switch between Runs and Details tabs
 - `↑↓`: Navigate experiments/tasks
 - `Enter`: Select experiment (in Runs tab)
@@ -259,36 +269,10 @@ If you omit `db_path`, the package stores the experiment under the default progr
 manager = ProgressManager("My Experiment", 3; db_path = "./logs/run1.db")
 ```
 
-## Differences from v0.0.x
-
-This is a simplified rewrite focused on multi-task experiments:
-
-| Feature | v0.0.x | v0.1.0+ |
-|---------|--------|---------|
-| Display | ProgressMeter.jl | Tachikoma dashboard |
-| Persistence | None | SQLite (current state only) |
-| Task Model | Single task | Multi-task experiments |
-| Dashboard | Terminal bars | 2-tab TUI (Runs + Details) |
-| Admin Tools | None | Removed (simplified) |
-| Distributed | RemoteChannels | ProgressTask + get_task(..., :remote); single DB writer, channel-based |
-| History | Full snapshots | Current state only |
-
-## Development
-
-Run tests:
-```bash
-julia --project -e 'using Pkg; Pkg.test()'
-```
-
-Build documentation:
-```bash
-cd docs && julia make.jl
-```
-
 ## License
 
 MIT
 
 ## Contributing
 
-Contributions welcome! Please open an issue to discuss changes before submitting PRs.
+Contributions welcome! Please open an issue to discuss changes before submitting PRs with new features.
