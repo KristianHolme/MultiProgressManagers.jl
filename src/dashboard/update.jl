@@ -106,16 +106,18 @@ end
 # === Running Tab ===
 
 function _update_running_tab!(m::ProgressDashboard, evt::KeyEvent)
-    if evt.key == :tab
-        m.running_focus = mod1(m.running_focus + 1, 2)
+    if evt.key == :char && evt.char == 'a'
+        m.task_list_msg_delta -= 1
         return
     end
-    
-    if m.running_focus == 2
-        if evt.key == :up || evt.key == :ctrl && evt.char == 'k'
-            m.task_scroll_offset = max(0, m.task_scroll_offset - 1)
-        elseif evt.key == :down || evt.key == :ctrl && evt.char == 'j'
-            m.task_scroll_offset += 1
-        end
+    if evt.key == :char && evt.char == 'd'
+        m.task_list_msg_delta += 1
+        return
     end
+    if evt.key == :up || evt.key == :ctrl && evt.char == 'k'
+        m.task_scroll_offset = max(0, m.task_scroll_offset - 1)
+    elseif evt.key == :down || evt.key == :ctrl && evt.char == 'j'
+        m.task_scroll_offset += 1
+    end
+    return
 end

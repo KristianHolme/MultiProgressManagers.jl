@@ -443,6 +443,8 @@ CREATE TABLE tasks (
     status TEXT CHECK(status IN ('pending', 'running', 'completed', 'failed')),
     started_at REAL,
     last_updated REAL,
+    display_message TEXT DEFAULT '',
+    description TEXT DEFAULT '',
     FOREIGN KEY (experiment_id) REFERENCES experiments(id)
 );
 ```
@@ -456,6 +458,8 @@ CREATE TABLE tasks (
 - `status`: Task status (pending/running/completed/failed)
 - `started_at`: Unix timestamp when task started
 - `last_updated`: Unix timestamp of last progress update
+- `display_message`: Live message updated during simulation (epoch, stage, etc.)
+- `description`: Static metadata for the task (set at creation, not updated by progress)
 
 **Key Design Decisions:**
 - NO progress_snapshots table (no history tracking for MWP)

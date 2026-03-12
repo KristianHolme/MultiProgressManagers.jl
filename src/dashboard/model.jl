@@ -81,8 +81,9 @@ end
     running_experiments::Vector{ExperimentSummary} = ExperimentSummary[]
     selected_experiment::Int = 0
     task_scroll_offset::Int = 0
+    task_list_msg_delta::Int = 0  # offset from 50% Msg/Desc split; a/d to adjust
     selected_task::Int = 0
-    running_focus::Int = 1  # 1=Experiments, 2=Tasks
+    running_focus::Int = 2  # 2=Tasks only (Details tab)
     
     # Admin data (used for runs list/details)
     admin_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
@@ -399,7 +400,7 @@ function _poll_database!(m::ProgressDashboard)
 
     if m.selected_experiment_id != previous_selected_id
         m.task_scroll_offset = 0
-        m.running_focus = 1
+        m.running_focus = 2
         if isempty(m.selected_experiment_id)
             m.selected_task = 0
         end

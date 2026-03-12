@@ -3,9 +3,10 @@
 using Dates
 using DataFrames
 
-function _init_progress_manager(name::String, total_tasks::Int; description::String = "", db_path::String)
+function _init_progress_manager(name::String, total_tasks::Int; description::String = "", db_path::String, task_descriptions::Vector{String} = String[])
     handle = Database.init_db!(db_path)
-    experiment_id = Database.create_experiment(handle, name, total_tasks; description = description)
+    task_descriptions_arg = isempty(task_descriptions) ? nothing : task_descriptions
+    experiment_id = Database.create_experiment(handle, name, total_tasks; description = description, task_descriptions = task_descriptions_arg)
     experiment = Database._existing_experiment(handle)
     if experiment === nothing
         error("Experiment was not found after opening database: $db_path")
@@ -73,12 +74,16 @@ function ProgressManager(
     num_tasks::Int;
     description::String = "",
     db_path::Union{String,Nothing} = nothing,
+    task_descriptions::Vector{String} = String[],
 )
+    if !isempty(task_descriptions) && length(task_descriptions) != num_tasks
+        error("task_descriptions length ($(length(task_descriptions))) must equal num_tasks ($num_tasks)")
+    end
     resolved_db_path = db_path === nothing ? default_db_path(experiment_name) : db_path
     if db_path === nothing
         _ensure_default_db_path_available(experiment_name, resolved_db_path)
     end
-    return _init_progress_manager(experiment_name, num_tasks; description = description, db_path = resolved_db_path)
+    return _init_progress_manager(experiment_name, num_tasks; description = description, db_path = resolved_db_path, task_descriptions = task_descriptions)
 end
 
 function _message_or_nothing(message::String)

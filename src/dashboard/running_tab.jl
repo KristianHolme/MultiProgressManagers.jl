@@ -32,9 +32,8 @@ function _find_selected_experiment(m::ProgressDashboard)::Union{ExperimentAdminV
 end
 
 function _view_experiment_detail_panel!(m::ProgressDashboard, area::Rect, buf)
-    # Focus indicator
-    border_style = m.running_focus == 1 ? tstyle(:accent) : tstyle(:border)
-    title_style = m.running_focus == 1 ? tstyle(:accent, bold = true) : tstyle(:title, bold = true)
+    border_style = tstyle(:border)
+    title_style = tstyle(:title, bold = true)
 
     table_block = Block(
         title = " Experiment Details ",
@@ -104,9 +103,13 @@ function _view_experiment_detail_panel!(m::ProgressDashboard, area::Rect, buf)
         end
     end
 
+    started_str = ismissing(started_at) ? "N/A" : format_datetime_for_started_column(started_at, true)
+
     set_string!(buf, x, y, name, tstyle(:accent, bold = true); max_x = max_x)
     y += 1
     set_string!(buf, x, y, "Status: $(string(status))", status_style; max_x = max_x)
+    y += 1
+    set_string!(buf, x, y, "Started: $(started_str)", tstyle(:text_dim); max_x = max_x)
     y += 1
     set_string!(buf, x, y, "Tasks: $(completed_tasks)/$(total_tasks) completed", tstyle(:text); max_x = max_x)
     y += 1
@@ -131,9 +134,8 @@ function _pane_title(pane::Int)
     tstyle(:title, bold = true)
 end
 function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
-    # Focus indicator
-    border_style = m.running_focus == 2 ? tstyle(:accent) : tstyle(:border)
-    title_style = m.running_focus == 2 ? tstyle(:accent, bold = true) : tstyle(:title, bold = true)
+    border_style = tstyle(:accent)
+    title_style = tstyle(:accent, bold = true)
     
     # 1. Get selected experiment ID
     exp_id = m.selected_experiment_id
@@ -168,21 +170,38 @@ function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
     block = Block(title = " Tasks for $(exp_name) ", border_style = border_style, title_style = title_style)
     inner_area = render(block, area, buf)
     
-    # 4. Header
+    # 4. Header and column layout (Msg/Desc split: 50% + delta, min widths)
     header_y = inner_area.y
     header_style = tstyle(:text_dim, bold = true)
-    
+
     col_num = inner_area.x
     col_progress = inner_area.x + 8
     col_speed = inner_area.x + 30
     col_status = inner_area.x + 45
     col_message = inner_area.x + 55
+    remaining = right(inner_area) - col_message
+    min_msg_width = 5
+    min_desc_width = 5
+    base_msg_width = div(remaining, 2)
+    msg_width = clamp(
+        base_msg_width + m.task_list_msg_delta,
+        min_msg_width,
+        remaining - min_desc_width,
+    )
+    col_description = col_message + msg_width
+    # Normalize stored delta to effective value so key-repeat does not "dig a hole"
+    m.task_list_msg_delta = msg_width - base_msg_width
+
+    desc_width = remaining - msg_width
+    msg_header = msg_width >= 7 ? "Message" : "Msg"
+    desc_header = desc_width >= 11 ? "Description" : "Descr"
 
     set_string!(buf, col_num, header_y, "Task #", header_style)
     set_string!(buf, col_progress, header_y, "Progress", header_style)
     set_string!(buf, col_speed, header_y, "Speed", header_style)
     set_string!(buf, col_status, header_y, "Status", header_style)
-    set_string!(buf, col_message, header_y, "Message", header_style)
+    set_string!(buf, col_message, header_y, msg_header, header_style)
+    set_string!(buf, col_description, header_y, desc_header, header_style)
     y = header_y + 1
     max_y = bottom(inner_area)
     
@@ -231,11 +250,16 @@ function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
         render(gauge, gauge_area, buf)
         set_string!(buf, col_speed, y, format_speed(speed), tstyle(:text))
         set_string!(buf, col_status, y, status, style)
-        # Display message (epochs, stage, etc.)
+        # Display message (epochs, stage, etc.) — left of Desc
         msg = hasproperty(row, :display_message) ? row[:display_message] : missing
         msg_str = (msg === missing || ismissing(msg) || isempty(string(msg))) ? "" : string(msg)
         msg_style = isempty(msg_str) ? tstyle(:text_dim) : tstyle(:text)
-        set_string!(buf, col_message, y, msg_str, msg_style; max_x = right(inner_area))
+        set_string!(buf, col_message, y, msg_str, msg_style; max_x = col_description - 1)
+        # Description (static metadata)
+        desc = hasproperty(row, :description) ? row[:description] : missing
+        desc_str = (desc === missing || ismissing(desc) || isempty(string(desc))) ? "" : string(desc)
+        desc_style = isempty(desc_str) ? tstyle(:text_dim) : tstyle(:text)
+        set_string!(buf, col_description, y, desc_str, desc_style; max_x = right(inner_area))
         y += 1
     end
 end

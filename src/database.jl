@@ -173,10 +173,20 @@ function _init_schema!(db::SQLite.DB)
             started_at REAL,
             last_updated REAL,
             display_message TEXT DEFAULT '',
+            description TEXT DEFAULT '',
             FOREIGN KEY (experiment_id) REFERENCES experiments(id)
         )
         """
     )
+
+    # Migration: add description column to existing tasks tables that don't have it
+    table_info = DBInterface.execute(db, "PRAGMA table_info(tasks)") |> DataFrame
+    if "name" in names(table_info)
+        col_names = table_info.name
+        if !("description" in col_names)
+            DBInterface.execute(db, "ALTER TABLE tasks ADD COLUMN description TEXT DEFAULT ''")
+        end
+    end
 
     DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_exp_status ON experiments(status)")
     DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_tasks_exp ON tasks(experiment_id)")
@@ -233,13 +243,21 @@ end
 
 """
     create_experiment(handle::DBHandle, name::String, total_tasks::Int;
-                      description::String="") -> String
+                      description::String="", task_descriptions::Union{Vector{String},Nothing}=nothing) -> String
 
 Create a new experiment record with tasks and return its ID.
+If task_descriptions is provided, length must equal total_tasks; each task gets the corresponding description (static metadata).
 """
 function create_experiment(handle::DBHandle, name::String, total_tasks::Int;
-    description::String = ""
+    description::String = "",
+    task_descriptions::Union{Vector{String},Nothing} = nothing
 )
+    if task_descriptions !== nothing && length(task_descriptions) != total_tasks
+        error(
+            "task_descriptions length ($(length(task_descriptions))) must equal total_tasks ($total_tasks)"
+        )
+    end
+
     db = ensure_open!(handle)
     existing_experiment = _existing_experiment(handle)
     if existing_experiment !== nothing
@@ -274,13 +292,18 @@ function create_experiment(handle::DBHandle, name::String, total_tasks::Int;
             )
 
             for task_number in 1:total_tasks
+                task_desc = if task_descriptions !== nothing
+                    task_descriptions[task_number]
+                else
+                    ""
+                end
                 task_id = string(UUIDs.uuid4())
                 DBInterface.execute(
                     db,
                     """
                     INSERT INTO tasks
-                        (id, experiment_id, task_number, total_steps, current_step, status, started_at, last_updated, display_message)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (id, experiment_id, task_number, total_steps, current_step, status, started_at, last_updated, display_message, description)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         task_id,
@@ -292,6 +315,7 @@ function create_experiment(handle::DBHandle, name::String, total_tasks::Int;
                         started_at,
                         started_at,
                         "",
+                        task_desc,
                     ]
                 )
             end
@@ -323,16 +347,18 @@ end
 
 """
     create_task(handle::DBHandle, experiment_id::String, task_number::Int, total_steps::Int;
-                status::String="pending") -> String
+                status::String="pending", description::String="") -> String
 
 Create a new task for an experiment and return its ID.
+description is static metadata for the task (not updated by progress).
 """
 function create_task(
     handle::DBHandle,
     experiment_id::String,
     task_number::Int,
     total_steps::Int;
-    status::String = "pending"
+    status::String = "pending",
+    description::String = ""
 )
     db = ensure_open!(handle)
     task_id = string(UUIDs.uuid4())
@@ -343,8 +369,8 @@ function create_task(
             db,
             """
             INSERT INTO tasks
-                (id, experiment_id, task_number, total_steps, current_step, status, started_at, last_updated, display_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, experiment_id, task_number, total_steps, current_step, status, started_at, last_updated, display_message, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 task_id,
@@ -356,6 +382,7 @@ function create_task(
                 started_at,
                 started_at,
                 "",
+                description,
             ]
         )
     end

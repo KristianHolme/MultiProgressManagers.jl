@@ -62,8 +62,79 @@ end
         # Second column is the column name in SQLite PRAGMA table_info
         name_col = Symbol.(DataFrames.names(col_info))[2]
         @test "display_message" in string.(col_info[!, name_col])
+        @test "description" in string.(col_info[!, name_col])
     finally
         Database.close_db!(handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "Task description: create_task and create_experiment" begin
+    test_db = tempname() * ".db"
+    handle = Database.init_db!(test_db)
+    try
+        # create_experiment with task_descriptions
+        exp_id = Database.create_experiment(handle, "DescTest", 2; task_descriptions = ["d1", "d2"])
+        tasks = Database.get_experiment_tasks(handle, exp_id)
+        @test nrow(tasks) == 2
+        @test coalesce(tasks[1, :description], "") == "d1"
+        @test coalesce(tasks[2, :description], "") == "d2"
+
+        # create_task with description (add a third task for same experiment)
+        task_id = Database.create_task(handle, exp_id, 3, 10; description = "my static info")
+        @test !isempty(task_id)
+        tasks = Database.get_experiment_tasks(handle, exp_id)
+        row3 = tasks[tasks.task_number .== 3, :][1, :]
+        @test coalesce(row3.description, "") == "my static info"
+    finally
+        Database.close_db!(handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "Task description: task_descriptions length must match total_tasks" begin
+    test_db = tempname() * ".db"
+    handle = Database.init_db!(test_db)
+    try
+        @test_throws Exception Database.create_experiment(handle, "Mismatch", 2; task_descriptions = ["only one"])
+        @test_throws Exception Database.create_experiment(handle, "Mismatch", 2; task_descriptions = ["a", "b", "c"])
+    finally
+        Database.close_db!(handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "ProgressManager with task_descriptions" begin
+    bad_db = tempname() * ".db"
+    try
+        @test_throws Exception MPM.ProgressManager("PMDesc", 2; db_path = bad_db, task_descriptions = ["only one"])
+    finally
+        rm(bad_db, force = true)
+    end
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("PMDesc", 2; db_path = test_db, task_descriptions = ["a", "b"])
+    try
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        @test nrow(tasks) == 2
+        @test coalesce(tasks[1, :description], "") == "a"
+        @test coalesce(tasks[2, :description], "") == "b"
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "update! does not change task description" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("NoChangeDesc", 1; db_path = test_db, task_descriptions = ["static meta"])
+    try
+        MPM.update!(manager, 1; step = 1, total_steps = 5, message = "running")
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        row = tasks[1, :]
+        @test coalesce(row.description, "") == "static meta"
+        @test coalesce(get(row, :display_message, missing), "") == "running"
+    finally
+        Database.close_db!(manager.db_handle)
         rm(test_db, force = true)
     end
 end
@@ -186,7 +257,6 @@ end
         @test String(experiment.status) == "failed"
 
         dashboard.active_tab = 2
-        dashboard.running_focus = 1
         dashboard.task_scroll_offset = 0
         MPM._poll_database!(dashboard)
         dashboard.runs_selected = 1
@@ -197,7 +267,8 @@ end
         TK.view(dashboard, frame)
 
         @test _buffer_contains(backend, "Tasks for DashMock")
-        @test _buffer_contains(backend, "Message")
+        @test (_buffer_contains(backend, "Description") || _buffer_contains(backend, "Desc"))
+        @test (_buffer_contains(backend, "Message") || _buffer_contains(backend, "Msg"))
         @test _buffer_contains(backend, "epoch 2")
     finally
         Database.close_db!(manager.db_handle)
