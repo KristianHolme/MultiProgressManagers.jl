@@ -98,6 +98,7 @@ Shows all experiments in the database:
 - Status (running/completed/failed)
 - Overall progress across all tasks
 - Start time and duration
+- Automatically selects the newest experiment at the top of the list
 
 ### Tab 2: Details (Running)
 Shows detailed view of selected experiment:
@@ -114,36 +115,34 @@ Shows detailed view of selected experiment:
 ```julia
 ProgressManager(name::String, num_tasks::Int;
                 description::String = "",
-                db_path::String = "./progresslogs/experiment.db")
-# or
-create_experiment(name::String, total_tasks::Int;
-                  description::String = "",
-                  db_path::String) -> ProgressManager
+                db_path::Union{String,Nothing} = nothing)
 ```
 
 **Parameters:**
 - `name`: Human-readable experiment name (shown in dashboard)
 - `num_tasks` / `total_tasks`: Number of parallel sub-tasks in this experiment
 - `description`: Optional longer description
-- `db_path`: Path to SQLite database file
+- `db_path`: Optional path to SQLite database file. When omitted, the package derives a default path from the experiment name.
 
 **Returns:** A `ProgressManager` instance for tracking this experiment.
+
+`create_experiment(...)` remains available as a deprecated compatibility alias.
 
 ### Updating Task Progress (in-process)
 
 ```julia
 update!(manager::ProgressManager, task_number::Int, current_step::Int;
-        total_steps::Int = 0,
+        total_steps::Union{Int,Nothing} = nothing,
         message::String = "")
 ```
 
-Records progress for a specific task. Optionally pass `total_steps` and `message`; the message is shown in the dashboard Details tab. Automatically marks task as "completed" when `current_step` reaches the task's total steps.
+Records progress for a specific task. Optionally pass `total_steps` and `message`; the message is shown in the dashboard Details tab. When `total_steps` is omitted, the previously stored total is reused.
 
 **Parameters:**
 - `manager`: The ProgressManager for this experiment
 - `task_number`: 1-indexed task number (1 to total_tasks)
 - `current_step`: Current progress step for this task
-- `total_steps`: Optional; used for progress display
+- `total_steps`: Optional; set it once and later updates may omit it
 - `message`: Optional; shown in the "Message" column (e.g. phase or status)
 
 ### ProgressTask: worker-based updates
@@ -159,11 +158,13 @@ Returns a handle for one task. `type`:
 - `:remote` — `RemoteChannel` (for `Distributed` / `pmap`)
 
 ```julia
-report_progress!(task::ProgressTask, current_step::Int; total_steps::Int = 0, message::String = "")
+report_progress!(task::ProgressTask, current_step::Int;
+                 total_steps::Union{Int,Nothing} = nothing,
+                 message::String = "")
 finish!(task::ProgressTask)
 ```
 
-Workers call `report_progress!` during the loop and `finish!(task)` when the task is done. A listener on the master process applies these to the DB.
+Workers call `report_progress!` during the loop and `finish!(task)` when the task is done. A listener on the master process applies these to the DB. As with `update!`, `total_steps` only needs to be supplied when it changes or is first established.
 
 ### Finishing a Task (in-process)
 
@@ -247,7 +248,7 @@ In the dashboard:
 
 ### Database Location
 
-By default, you specify the database path when creating an experiment. The directory will be created if it doesn't exist.
+If you omit `db_path`, the package stores the experiment under the default progress-log directory using a filename derived from the experiment name. Because each experiment now gets its own DB file, duplicate names at the default path are rejected; pass an explicit `db_path` if you want to reopen an existing experiment file.
 
 ```julia
 # Example: Create database in specific directory

@@ -536,7 +536,16 @@ function finish_experiment!(
             db,
             """
             UPDATE tasks
-            SET current_step = total_steps, status = 'completed', last_updated = ?
+            SET total_steps = CASE
+                    WHEN total_steps > current_step THEN total_steps
+                    ELSE current_step
+                END,
+                current_step = CASE
+                    WHEN total_steps > current_step THEN total_steps
+                    ELSE current_step
+                END,
+                status = 'completed',
+                last_updated = ?
             WHERE experiment_id = ?
             """,
             [finished_at, experiment_id]

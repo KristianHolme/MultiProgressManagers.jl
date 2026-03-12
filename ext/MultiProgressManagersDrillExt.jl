@@ -56,7 +56,7 @@ Create a Drill callback for progress tracking.
 ```julia
 using MultiProgressManagers
 using Drill
-manager = create_experiment("my_study", 10; db_path = default_db_path())
+manager = ProgressManager("my_study", 10; db_path = default_db_path("my_study"))
 task = get_task(manager, 1, :remote)
 callback = create_dril_callback(task)
 ```
