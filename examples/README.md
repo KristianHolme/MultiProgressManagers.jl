@@ -99,7 +99,7 @@ The dashboard has 2 tabs for monitoring experiments:
 - List of all experiments in the database
 - Shows experiment name, status, and overall progress
 - Sorted by start time (newest first)
-- Select an experiment to view details
+- Auto-selects the top experiment so Details opens immediately
 
 **Tab 2: Details** (press `2`)
 - Detailed view of the selected experiment
@@ -159,19 +159,18 @@ finish_experiment!(manager)
 
 **Creating an Experiment**
 ```julia
-create_experiment(name::String, total_tasks::Int;
-                  description::String="",
-                  db_path::String) -> ProgressManager
+ProgressManager(name::String, total_tasks::Int;
+                description::String = "",
+                db_path::Union{String,Nothing} = nothing) -> ProgressManager
 ```
 
 **Updating Task Progress**
 ```julia
 update!(manager::ProgressManager, task_number::Int, current_step::Int;
-        total_steps::Int=0)
+        total_steps::Union{Int,Nothing} = nothing)
 ```
 
-- `total_steps`: Total expected steps for this task. If > 0, enables accurate progress percentage calculation.
-- If `total_steps=0` (default), it will be dynamically set to the maximum `current_step` seen so far.
+- `total_steps`: Total expected steps for this task. Set it once, then omit it on later updates if it has not changed.
 ```julia
 update!(manager::ProgressManager, task_number::Int, current_step::Int)
 ```

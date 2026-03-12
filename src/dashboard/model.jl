@@ -357,14 +357,29 @@ function _poll_database!(m::ProgressDashboard)
     elseif m.admin_selected > length(m.admin_experiments)
         m.admin_selected = length(m.admin_experiments)
     end
-    
-    if !isempty(m.selected_experiment_id)
-        has_selected = any(m.admin_experiments) do exp
-            !ismissing(exp.id) && exp.id == m.selected_experiment_id
+
+    previous_selected_id = m.selected_experiment_id
+    if isempty(m.admin_experiments)
+        m.selected_experiment_id = ""
+        m.runs_selected = 0
+    else
+        selected_index = findfirst(m.admin_experiments) do exp
+            return !ismissing(exp.id) && exp.id == m.selected_experiment_id
         end
-        if !has_selected
-            m.selected_experiment_id = ""
-            m.runs_selected = 0
+        if selected_index === nothing
+            m.runs_selected = 1
+            top_experiment = m.admin_experiments[1]
+            m.selected_experiment_id = ismissing(top_experiment.id) ? "" : top_experiment.id
+        else
+            m.runs_selected = selected_index
+        end
+    end
+
+    if m.selected_experiment_id != previous_selected_id
+        m.task_scroll_offset = 0
+        m.running_focus = 1
+        if isempty(m.selected_experiment_id)
+            m.selected_task = 0
         end
     end
 end

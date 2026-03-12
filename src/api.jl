@@ -3,8 +3,7 @@
 using Dates
 using DataFrames
 
-"""Create a new multi-task experiment and return a ProgressManager."""
-function create_experiment(name::String, total_tasks::Int; description::String = "", db_path::String)
+function _init_progress_manager(name::String, total_tasks::Int; description::String = "", db_path::String)
     handle = Database.init_db!(db_path)
     experiment_id = Database.create_experiment(handle, name, total_tasks; description = description)
     experiment = Database._existing_experiment(handle)
@@ -37,26 +36,79 @@ function create_experiment(name::String, total_tasks::Int; description::String =
     return manager
 end
 
+function _ensure_default_db_path_available(name::String, db_path::String)
+    if !isfile(db_path)
+        return nothing
+    end
+
+    handle = Database.init_db!(db_path)
+    try
+        existing_experiment = Database._existing_experiment(handle)
+        if existing_experiment === nothing
+            return nothing
+        end
+
+        error(
+            "Default database path already exists for experiment \"$(name)\": $(db_path). " *
+            "Each experiment must use its own DB file. Choose a unique experiment name " *
+            "or pass this db_path explicitly to reopen the existing experiment."
+        )
+    finally
+        Database.close_db!(handle)
+    end
+end
+
+"""Create a new multi-task experiment and return a ProgressManager."""
+function create_experiment(name::String, total_tasks::Int; description::String = "", db_path::String)
+    Base.depwarn(
+        "`create_experiment(...)` is deprecated; use `ProgressManager(name, total_tasks; ...)` instead.",
+        :create_experiment,
+    )
+    return _init_progress_manager(name, total_tasks; description = description, db_path = db_path)
+end
+
 # Outer constructor for easier creation
 function ProgressManager(
     experiment_name::String,
     num_tasks::Int;
     description::String = "",
-    db_path::String = default_db_path(experiment_name),
+    db_path::Union{String,Nothing} = nothing,
 )
-    return create_experiment(experiment_name, num_tasks; description = description, db_path = db_path)
+    resolved_db_path = db_path === nothing ? default_db_path(experiment_name) : db_path
+    if db_path === nothing
+        _ensure_default_db_path_available(experiment_name, resolved_db_path)
+    end
+    return _init_progress_manager(experiment_name, num_tasks; description = description, db_path = resolved_db_path)
 end
 
 """Update progress for a specific task within a multi-task experiment."""
-function update!(manager::ProgressManager, task_number::Int, current_step::Int; total_steps::Int=0, message::String="")
+function update!(
+    manager::ProgressManager,
+    task_number::Int,
+    current_step::Int;
+    total_steps::Union{Int,Nothing} = nothing,
+    message::String = "",
+)
     ts = manager.task_status[task_number]
-    # Use provided total_steps, or dynamically grow if not specified
-    new_total_steps = total_steps > 0 ? total_steps : max(ts.total_steps, current_step)
-    new_step = max(0, min(current_step, new_total_steps))
+    new_total_steps = if total_steps === nothing
+        ts.total_steps
+    else
+        max(total_steps, current_step)
+    end
+    max_step = max(0, current_step)
+    new_step = new_total_steps > 0 ? min(max_step, new_total_steps) : max_step
     # Keep as running unless already completed
     new_status = ts.status == "completed" ? "completed" : "running"
     msg = isempty(message) ? nothing : message
-    Database.update_task!(manager.db_handle, ts.task_id, new_step; total_steps=new_total_steps, status=new_status, message=msg)
+    db_total_steps = total_steps === nothing ? nothing : new_total_steps
+    Database.update_task!(
+        manager.db_handle,
+        ts.task_id,
+        new_step;
+        total_steps = db_total_steps,
+        status = new_status,
+        message = msg,
+    )
     manager.task_status[task_number] = TaskStatus(ts.task_id, new_total_steps, new_step, new_status, ts.started_at)
     return nothing
 end
@@ -64,8 +116,21 @@ end
 """Mark a specific task as completed."""
 function finish_task!(manager::ProgressManager, task_number::Int)
     ts = manager.task_status[task_number]
-    Database.update_task!(manager.db_handle, ts.task_id, ts.total_steps; total_steps=ts.total_steps, status="completed")
-    manager.task_status[task_number] = TaskStatus(ts.task_id, ts.total_steps, ts.total_steps, "completed", ts.started_at)
+    completed_steps = max(ts.total_steps, ts.current_step)
+    Database.update_task!(
+        manager.db_handle,
+        ts.task_id,
+        completed_steps;
+        total_steps = completed_steps,
+        status = "completed",
+    )
+    manager.task_status[task_number] = TaskStatus(
+        ts.task_id,
+        completed_steps,
+        completed_steps,
+        "completed",
+        ts.started_at,
+    )
     return nothing
 end
 
@@ -73,7 +138,14 @@ end
 function finish_experiment!(manager::ProgressManager)
     Database.finish_experiment!(manager.db_handle, manager.experiment_id; message = "Completed successfully")
     for (k, ts) in manager.task_status
-        manager.task_status[k] = TaskStatus(ts.task_id, ts.total_steps, ts.total_steps, "completed", ts.started_at)
+        completed_steps = max(ts.total_steps, ts.current_step)
+        manager.task_status[k] = TaskStatus(
+            ts.task_id,
+            completed_steps,
+            completed_steps,
+            "completed",
+            ts.started_at,
+        )
     end
     return nothing
 end
@@ -92,16 +164,24 @@ end
 
 function create_progress_manager(name::String, total_steps::Int;
     description::String = "",
-    db_path::String = default_db_path(name),
+    db_path::Union{String,Nothing} = nothing,
     update_frequency_ms::Int = 100,
     speed_window_seconds::Real = 30,
     worker_count::Int = 1,
 )
-    # Delegate to new API
-    manager = create_experiment(name, total_steps;
+    Base.depwarn(
+        "`create_progress_manager(...)` is deprecated; use `ProgressManager(name, total_tasks; ...)` instead.",
+        :create_progress_manager,
+    )
+    manager = ProgressManager(
+        name,
+        total_steps;
         description = description,
         db_path = db_path,
     )
+    _ = update_frequency_ms
+    _ = speed_window_seconds
+    _ = worker_count
     return manager
 end
 
