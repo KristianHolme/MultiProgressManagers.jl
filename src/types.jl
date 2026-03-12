@@ -19,7 +19,13 @@ struct TaskFinished
     task_number::Int
 end
 
-const ProgressMessage = Union{ProgressUpdate, TaskFinished}
+"""Message sent over the progress channel when a task fails."""
+struct TaskFailed
+    task_number::Int
+    message::String
+end
+
+const ProgressMessage = Union{ProgressUpdate, TaskFinished, TaskFailed}
 
 """Handle for a single task; workers use this to report progress via the channel."""
 struct ProgressTask

@@ -1,4 +1,4 @@
-# MULTI-TASK API: create_experiment, update!, finish_task!, finish_experiment!, fail_task!
+# Unified API: create_experiment, update!, finish!, fail!
 
 using Dates
 using DataFrames
@@ -81,11 +81,10 @@ function ProgressManager(
     return _init_progress_manager(experiment_name, num_tasks; description = description, db_path = resolved_db_path)
 end
 
-"""Update progress for a specific task within a multi-task experiment."""
-function update!(
+function _update_task!(
     manager::ProgressManager,
-    task_number::Int,
-    current_step::Int;
+    task_number::Int;
+    step::Int,
     total_steps::Union{Int,Nothing} = nothing,
     message::String = "",
 )
@@ -93,12 +92,16 @@ function update!(
     new_total_steps = if total_steps === nothing
         ts.total_steps
     else
-        max(total_steps, current_step)
+        max(total_steps, step)
     end
-    max_step = max(0, current_step)
+    max_step = max(0, step)
     new_step = new_total_steps > 0 ? min(max_step, new_total_steps) : max_step
-    # Keep as running unless already completed
-    new_status = ts.status == "completed" ? "completed" : "running"
+    # Keep terminal states intact if an update arrives late.
+    new_status = if ts.status == "completed" || ts.status == "failed"
+        ts.status
+    else
+        "running"
+    end
     msg = isempty(message) ? nothing : message
     db_total_steps = total_steps === nothing ? nothing : new_total_steps
     Database.update_task!(
@@ -113,8 +116,7 @@ function update!(
     return nothing
 end
 
-"""Mark a specific task as completed."""
-function finish_task!(manager::ProgressManager, task_number::Int)
+function _finish_task!(manager::ProgressManager, task_number::Int)
     ts = manager.task_status[task_number]
     completed_steps = max(ts.total_steps, ts.current_step)
     Database.update_task!(
@@ -134,9 +136,8 @@ function finish_task!(manager::ProgressManager, task_number::Int)
     return nothing
 end
 
-"""Finish an entire experiment: mark all tasks as completed and set experiment status."""
-function finish_experiment!(manager::ProgressManager)
-    Database.finish_experiment!(manager.db_handle, manager.experiment_id; message = "Completed successfully")
+function _finish_experiment!(manager::ProgressManager; message::String = "Completed successfully")
+    Database.finish_experiment!(manager.db_handle, manager.experiment_id; message = message)
     for (k, ts) in manager.task_status
         completed_steps = max(ts.total_steps, ts.current_step)
         manager.task_status[k] = TaskStatus(
@@ -150,11 +151,38 @@ function finish_experiment!(manager::ProgressManager)
     return nothing
 end
 
-"""Mark a specific task as failed with a message."""
-function fail_task!(manager::ProgressManager, task_number::Int, error_message::String)
+function _fail_task!(manager::ProgressManager, task_number::Int; message::String = "Task failed")
     ts = manager.task_status[task_number]
-    Database.update_task!(manager.db_handle, ts.task_id, ts.current_step; total_steps=ts.total_steps, status="failed")
-    manager.task_status[task_number] = TaskStatus(ts.task_id, ts.total_steps, ts.current_step, "failed", ts.started_at)
+    msg = isempty(message) ? nothing : message
+    Database.update_task!(
+        manager.db_handle,
+        ts.task_id,
+        ts.current_step;
+        total_steps = ts.total_steps,
+        status = "failed",
+        message = msg,
+    )
+    manager.task_status[task_number] = TaskStatus(
+        ts.task_id,
+        ts.total_steps,
+        ts.current_step,
+        "failed",
+        ts.started_at,
+    )
+    return nothing
+end
+
+function _fail_experiment!(manager::ProgressManager; message::String = "Experiment failed")
+    Database.fail_experiment!(manager.db_handle, manager.experiment_id, message)
+    for (k, ts) in manager.task_status
+        manager.task_status[k] = TaskStatus(
+            ts.task_id,
+            ts.total_steps,
+            ts.current_step,
+            "failed",
+            ts.started_at,
+        )
+    end
     return nothing
 end
 
@@ -185,27 +213,93 @@ function create_progress_manager(name::String, total_steps::Int;
     return manager
 end
 
-function update!(manager::ProgressManager, current_step::Int; info::String="")
-    # Delegate to task-based update; pass info as display message for task 1
-    update!(manager, 1, current_step; message = info)
+"""Update progress for a specific task within a multi-task experiment."""
+function update!(
+    manager::ProgressManager,
+    task_number::Int;
+    step::Int,
+    total_steps::Union{Int,Nothing} = nothing,
+    message::String = "",
+)
+    return _update_task!(manager, task_number; step = step, total_steps = total_steps, message = message)
+end
+
+function update!(
+    manager::ProgressManager,
+    task_number::Int,
+    current_step::Int;
+    total_steps::Union{Int,Nothing} = nothing,
+    message::String = "",
+)
+    Base.depwarn(
+        "`update!(manager, task_number, step; ...)` is deprecated; use `update!(manager, task_number; step = ..., total_steps = ..., message = ...)` instead.",
+        :update!,
+    )
+    return update!(manager, task_number; step = current_step, total_steps = total_steps, message = message)
+end
+
+"""Mark a specific task or an entire experiment as completed."""
+function finish!(manager::ProgressManager, task_number::Int)
+    return _finish_task!(manager, task_number)
+end
+
+function finish!(manager::ProgressManager; message::String = "Completed successfully")
+    _finish_experiment!(manager; message = message)
     return nothing
 end
 
-function finish!(manager::ProgressManager; message::String="Completed successfully")
-    finish_experiment!(manager)
-    return nothing
+"""Mark a specific task or an entire experiment as failed."""
+function fail!(manager::ProgressManager, task_number::Int; message::String = "Task failed")
+    return _fail_task!(manager, task_number; message = message)
 end
 
-function fail!(manager::ProgressManager, error::Exception; message::Union{String,Nothing}=nothing)
+function fail!(manager::ProgressManager; message::String = "Experiment failed")
+    return _fail_experiment!(manager; message = message)
+end
+
+function fail!(manager::ProgressManager, error::Exception; message::Union{String,Nothing} = nothing)
     error_msg = message !== nothing ? message : sprint(showerror, error)
-    fail_task!(manager, 1, error_msg)
+    fail!(manager; message = error_msg)
     return nothing
 end
 
 function fail!(manager::ProgressManager, error_message::String)
-    fail_task!(manager, 1, error_message)
+    fail!(manager; message = error_message)
     return nothing
 end
+
+function finish_task!(manager::ProgressManager, task_number::Int)
+    Base.depwarn(
+        "`finish_task!(manager, task_number)` is deprecated; use `finish!(manager, task_number)` instead.",
+        :finish_task!,
+    )
+    return finish!(manager, task_number)
+end
+
+function finish_experiment!(manager::ProgressManager; message::String = "Completed successfully")
+    Base.depwarn(
+        "`finish_experiment!(manager)` is deprecated; use `finish!(manager; message = ...)` instead.",
+        :finish_experiment!,
+    )
+    return finish!(manager; message = message)
+end
+
+function fail_task!(manager::ProgressManager, task_number::Int, error_message::String)
+    Base.depwarn(
+        "`fail_task!(manager, task_number, message)` is deprecated; use `fail!(manager, task_number; message = ...)` instead.",
+        :fail_task!,
+    )
+    return fail!(manager, task_number; message = error_message)
+end
+
+function fail_experiment!(manager::ProgressManager, error_message::String)
+    Base.depwarn(
+        "`fail_experiment!(manager, message)` is deprecated; use `fail!(manager; message = ...)` instead.",
+        :fail_experiment!,
+    )
+    return fail!(manager; message = error_message)
+end
+
 
 function _default_db_directory()
     if isdir("./progresslogs")

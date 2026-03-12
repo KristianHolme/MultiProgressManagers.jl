@@ -16,14 +16,14 @@ for task_num in 1:5
     total_steps = 50
     for step in 1:total_steps
         sleep(0.01)  # Simulate work
-        update!(manager, task_num, step; total_steps=total_steps)
+        update!(manager, task_num; step = step, total_steps = total_steps)
     end
-    finish_task!(manager, task_num)
+    finish!(manager, task_num)
     println("  Task $task_num complete")
 end
 
 # Finish experiment
-finish_experiment!(manager)
+finish!(manager)
 
 println()
 println("Done! View with: mpm ./progresslogs/simple_monitor.db")

@@ -24,6 +24,33 @@ function _wait_for_task_completion(
     return Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
 end
 
+function _wait_for_task_statuses(
+    manager::MPM.ProgressManager,
+    expected_statuses::Dict{Int,String};
+    timeout_seconds::Float64 = 10.0,
+)
+    deadline = time() + timeout_seconds
+    while time() < deadline
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        statuses_match = nrow(tasks) == manager.total_tasks
+        if statuses_match
+            for row in eachrow(tasks)
+                task_number = Int(row.task_number)
+                expected_status = get(expected_statuses, task_number, nothing)
+                if expected_status === nothing || String(row.status) != expected_status
+                    statuses_match = false
+                    break
+                end
+            end
+        end
+        if statuses_match
+            return tasks
+        end
+        sleep(0.01)
+    end
+    return Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+end
+
 function _apply_script!(model::MPM.ProgressDashboard, script::TK.EventScript; fps::Int = 60)
     for (_, event) in script(fps)
         TK.update!(model, event)
@@ -92,7 +119,7 @@ end
             try
                 @test manager.db_path == joinpath("./progresslogs", "duplicate_name.db")
                 @test isfile(manager.db_path)
-                MPM.update!(manager, 1, 3; total_steps = 5, message = "resume progress")
+                MPM.update!(manager, 1; step = 3, total_steps = 5, message = "resume progress")
                 Database.close_db!(manager.db_handle)
 
                 duplicate_error = try
@@ -146,8 +173,8 @@ end
     test_db = tempname() * ".db"
     manager = MPM.ProgressManager("DashMock", 3; db_path = test_db)
     try
-        MPM.update!(manager, 1, 2; total_steps = 5, message = "epoch 2")
-        MPM.update!(manager, 2, 1; total_steps = 3, message = "warmup")
+        MPM.update!(manager, 1; step = 2, total_steps = 5, message = "epoch 2")
+        MPM.update!(manager, 2; step = 1, total_steps = 3, message = "warmup")
 
         dashboard = MPM.ProgressDashboard(
             db_path = test_db,
@@ -215,8 +242,8 @@ end
     manager_two = MPM.ProgressManager("FolderBeta", 2; db_path = db_two)
 
     try
-        MPM.update!(manager_one, 1, 1; total_steps = 3, message = "first-db message")
-        MPM.update!(manager_two, 1, 2; total_steps = 4, message = "second-db message")
+        MPM.update!(manager_one, 1; step = 1, total_steps = 3, message = "first-db message")
+        MPM.update!(manager_two, 1; step = 2, total_steps = 4, message = "second-db message")
 
         dashboard = MPM.ProgressDashboard(
             db_path = folder,
@@ -267,16 +294,16 @@ end
             task = local_tasks[task_number]
             for step in 1:updates_per_task
                 if step == 1
-                    MPM.report_progress!(
-                        task,
-                        step;
+                    MPM.update!(
+                        task;
+                        step = step,
                         total_steps = updates_per_task,
                         message = "task $(task_number) step $(step)",
                     )
                 else
-                    MPM.report_progress!(
-                        task,
-                        step;
+                    MPM.update!(
+                        task;
+                        step = step,
                         message = "task $(task_number) step $(step)",
                     )
                 end
@@ -298,7 +325,7 @@ end
             wait(manager._listener_task)
         end
 
-        MPM.finish_experiment!(manager)
+        MPM.finish!(manager)
         experiment = Database.get_experiment(manager.db_handle, manager.experiment_id)
         @test experiment !== nothing
         @test String(experiment.status) == "completed"
@@ -318,10 +345,10 @@ end
     test_db = tempname() * ".db"
     manager = MPM.ProgressManager("MessageTest", 2; db_path = test_db)
     try
-        MPM.update!(manager, 1, 5; total_steps = 10, message = "Epoch 1")
-        MPM.update!(manager, 1, 6; message = "Epoch 2")
-        MPM.update!(manager, 2, 3; message = "Warmup")
-        MPM.finish_task!(manager, 2)
+        MPM.update!(manager, 1; step = 5, total_steps = 10, message = "Epoch 1")
+        MPM.update!(manager, 1; step = 6, message = "Epoch 2")
+        MPM.update!(manager, 2; step = 3, message = "Warmup")
+        MPM.finish!(manager, 2)
         tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
         row = tasks[1, :]
         @test row.current_step == 6
@@ -338,13 +365,13 @@ end
     end
 end
 
-@testset "finish_experiment!" begin
+@testset "finish! completes an experiment" begin
     test_db = tempname() * ".db"
     manager = MPM.ProgressManager("FinishTest", 2; db_path = test_db)
     try
-        MPM.update!(manager, 1, 4; message = "no declared total")
-        MPM.update!(manager, 2, 2; total_steps = 5, message = "known total")
-        MPM.finish_experiment!(manager)
+        MPM.update!(manager, 1; step = 4, message = "no declared total")
+        MPM.update!(manager, 2; step = 2, total_steps = 5, message = "known total")
+        MPM.finish!(manager)
         exp = Database.get_experiment(manager.db_handle, manager.experiment_id)
         @test exp !== nothing
         @test String(exp.status) == "completed"
@@ -360,14 +387,55 @@ end
     end
 end
 
-@testset "fail_experiment!" begin
+@testset "fail! supports manager, task number, and ProgressTask" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("TaskFailTest", 2; db_path = test_db)
+    local_tasks = [MPM.get_task(manager, task_number, :local) for task_number in 1:2]
+    try
+        MPM.update!(manager, 1; step = 2, total_steps = 5, message = "direct update")
+        MPM.update!(local_tasks[2]; step = 1, total_steps = 4, message = "worker update")
+        MPM.fail!(manager, 1; message = "task 1 failed")
+        MPM.fail!(local_tasks[2]; message = "task 2 failed")
+
+        failed_tasks = _wait_for_task_statuses(
+            manager,
+            Dict(1 => "failed", 2 => "failed");
+            timeout_seconds = 10.0,
+        )
+        @test nrow(failed_tasks) == 2
+        @test all(row -> String(row.status) == "failed", eachrow(failed_tasks))
+        task_one = failed_tasks[failed_tasks.task_number .== 1, :][1, :]
+        task_two = failed_tasks[failed_tasks.task_number .== 2, :][1, :]
+        @test coalesce(get(task_one, :display_message, missing), "") == "task 1 failed"
+        @test coalesce(get(task_two, :display_message, missing), "") == "task 2 failed"
+
+        if manager._listener_task !== nothing
+            wait(manager._listener_task)
+        end
+    finally
+        if !isempty(local_tasks)
+            shared_channel = local_tasks[1].channel
+            if shared_channel isa Channel{MPM.ProgressMessage} && isopen(shared_channel)
+                close(shared_channel)
+            end
+        end
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "fail!(manager) marks the experiment as failed" begin
     test_db = tempname() * ".db"
     manager = MPM.ProgressManager("FailTest", 1; db_path = test_db)
     try
-        Database.fail_experiment!(manager.db_handle, manager.experiment_id, "error")
+        MPM.update!(manager, 1; step = 1, total_steps = 3, message = "started")
+        MPM.fail!(manager; message = "error")
         exp = Database.get_experiment(manager.db_handle, manager.experiment_id)
         @test exp !== nothing
         @test String(exp.status) == "failed"
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        @test nrow(tasks) == 1
+        @test String(tasks[1, :].status) == "failed"
     finally
         Database.close_db!(manager.db_handle)
         rm(test_db, force = true)
