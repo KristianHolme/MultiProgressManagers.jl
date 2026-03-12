@@ -82,7 +82,7 @@ end
     end
 end
 
-@testset "Default experiment DB path uses experiment name and rejects duplicates" begin
+@testset "Default experiment DB path reuses existing experiment by name" begin
     temp_root = mktempdir()
     try
         cd(temp_root) do
@@ -92,7 +92,19 @@ end
             try
                 @test manager.db_path == joinpath("./progresslogs", "duplicate_name.db")
                 @test isfile(manager.db_path)
-                @test_throws Exception MPM.ProgressManager("Duplicate Name", 1)
+                MPM.update!(manager, 1, 3; total_steps = 5, message = "resume progress")
+                Database.close_db!(manager.db_handle)
+
+                resumed_manager = MPM.ProgressManager("Duplicate Name", 1)
+                try
+                    @test resumed_manager.db_path == manager.db_path
+                    @test resumed_manager.experiment_id == manager.experiment_id
+                    @test resumed_manager.start_time == manager.start_time
+                    @test resumed_manager.task_status[1].current_step == 3
+                    @test resumed_manager.task_status[1].total_steps == 5
+                finally
+                    Database.close_db!(resumed_manager.db_handle)
+                end
             finally
                 Database.close_db!(manager.db_handle)
             end
@@ -106,7 +118,16 @@ end
     test_db = tempname() * ".db"
     manager = MPM.create_experiment("FirstExperiment", 1; db_path = test_db)
     try
+        Database.close_db!(manager.db_handle)
+        resumed_manager = MPM.create_experiment("FirstExperiment", 1; db_path = test_db)
+        try
+            @test resumed_manager.experiment_id == manager.experiment_id
+        finally
+            Database.close_db!(resumed_manager.db_handle)
+        end
+
         @test_throws Exception MPM.create_experiment("SecondExperiment", 1; db_path = test_db)
+        @test_throws Exception MPM.create_experiment("FirstExperiment", 2; db_path = test_db)
     finally
         Database.close_db!(manager.db_handle)
         rm(test_db, force = true)
