@@ -60,7 +60,7 @@ function main()
 
             # Update progress for this specific task
             # Update progress for this specific task
-            update!(manager, task_num, step; total_steps=steps_per_task)
+            update!(manager, task_num; step = step, total_steps = steps_per_task)
 
             # Print milestone updates
             if step % 25 == 0
@@ -70,14 +70,14 @@ function main()
         end
 
         # Mark this task as complete
-        finish_task!(manager, task_num)
+        finish!(manager, task_num)
         println("  Task $task_num: ✓ Complete                    ")
     end
 
     println()
 
     # Mark the entire experiment as finished
-    finish_experiment!(manager)
+    finish!(manager)
 
     println("="^60)
     println("All tasks completed!")

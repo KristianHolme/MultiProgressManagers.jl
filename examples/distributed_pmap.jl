@@ -2,7 +2,7 @@
 #
 # Runs tasks on multiple processes via pmap. The master is the only process that
 # touches the DB; workers send progress updates through a RemoteChannel. Each worker
-# gets a ProgressTask from get_task(manager, i, :remote) and calls report_progress!
+# gets a ProgressTask from get_task(manager, i, :remote) and calls update!
 # and finish! so the master's listener can write to the DB.
 #
 # Run with: julia -p 4 examples/distributed_pmap.jl
@@ -27,7 +27,7 @@ using MultiProgressManagers
             "finalizing (step $step)"
         end
 
-        report_progress!(task, step; total_steps = total_steps, message = msg)
+        update!(task; step = step, total_steps = total_steps, message = msg)
     end
 
     finish!(task)
@@ -64,7 +64,7 @@ function main()
     println("  All tasks finished.")
     println()
 
-    finish_experiment!(manager)
+    finish!(manager)
 
     println()
     println("="^60)
