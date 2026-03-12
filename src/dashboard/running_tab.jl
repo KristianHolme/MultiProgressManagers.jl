@@ -147,13 +147,13 @@ function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
     exp = _find_selected_experiment(m)
     exp_name = exp === nothing ? "Selected Experiment" : (ismissing(exp.name) ? "Unknown" : exp.name)
 
-    if m.db_handle === nothing
+    handle = _handle_for_experiment(m, exp_id)
+    if handle === nothing
         block = Block(title = " Tasks ", border_style = border_style, title_style = title_style)
         inner_area = render(block, area, buf)
         set_string!(buf, inner_area.x, inner_area.y + 1, "No database selected", tstyle(:text_dim))
         return
     end
-    handle = m.db_handle::Database.DBHandle
 
     # 2. Query tasks
     tasks = Database.get_experiment_tasks(handle, exp_id)

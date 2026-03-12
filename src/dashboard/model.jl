@@ -20,6 +20,7 @@ const tsplit = Tachikoma.split
 @kwdef struct ExperimentSummary
     id::Union{String,Missing}
     name::Union{String,Missing}
+    source_db_path::String = ""
     progress_pct::Union{Float64,Missing}
     status::Union{Symbol,Missing}
     started_at::Union{DateTime,Missing}
@@ -32,6 +33,7 @@ end
 @kwdef struct ExperimentAdminView
     id::Union{String,Missing}
     name::Union{String,Missing}
+    source_db_path::String = ""
     description::Union{String,Missing}
     total_tasks::Union{Int,Missing}
     total_steps::Union{Int,Missing}
@@ -52,6 +54,7 @@ end
     # Database
     db_path::String = ""
     db_handle::Union{Database.DBHandle,Nothing} = nothing
+    db_handles::Dict{String,Database.DBHandle} = Dict{String,Database.DBHandle}()
     folder_mode::Bool = false  # true if viewing a folder of experiments
     folder_path::String = ""
     available_dbs::Vector{String} = String[]
@@ -103,6 +106,86 @@ end
 
 # === Helper Functions ===
 
+function _discover_db_files(folder_path::String)
+    db_files = filter(readdir(folder_path; join = true)) do file_path
+        return endswith(lowercase(file_path), ".db")
+    end
+    sort!(db_files)
+    return db_files
+end
+
+function _open_dashboard_handles(db_paths::Vector{String})
+    handles = Dict{String,Database.DBHandle}()
+    for db_path in db_paths
+        handles[db_path] = Database.init_db!(db_path)
+    end
+    return handles
+end
+
+function _close_dashboard_handles!(handles::Dict{String,Database.DBHandle})
+    for handle in values(handles)
+        Database.close_db!(handle)
+    end
+    return nothing
+end
+
+function _dashboard_handle_pairs(m::ProgressDashboard)
+    if !isempty(m.db_handles)
+        handle_pairs = collect(pairs(m.db_handles))
+        sort!(handle_pairs; by = first)
+        return handle_pairs
+    end
+
+    if m.db_handle === nothing
+        return Pair{String,Database.DBHandle}[]
+    end
+
+    return [m.db_path => (m.db_handle::Database.DBHandle)]
+end
+
+function _handle_for_db_path(m::ProgressDashboard, db_path::String)
+    if !isempty(m.db_handles)
+        return get(m.db_handles, db_path, nothing)
+    end
+
+    if m.db_handle === nothing || m.db_path != db_path
+        return nothing
+    end
+
+    return m.db_handle::Database.DBHandle
+end
+
+function _db_path_for_experiment(m::ProgressDashboard, experiment_id::String)
+    isempty(experiment_id) && return nothing
+
+    for experiment in m.admin_experiments
+        if !ismissing(experiment.id) && experiment.id == experiment_id
+            return experiment.source_db_path
+        end
+    end
+
+    for experiment in m.running_experiments
+        if !ismissing(experiment.id) && experiment.id == experiment_id
+            return experiment.source_db_path
+        end
+    end
+
+    if !isempty(m.db_path)
+        return m.db_path
+    end
+
+    return nothing
+end
+
+function _handle_for_experiment(m::ProgressDashboard, experiment_id::String)
+    db_path = _db_path_for_experiment(m, experiment_id)
+    if db_path === nothing
+        return nothing
+    end
+
+    return _handle_for_db_path(m, db_path)
+end
+
 """
     view_dashboard(db_path::String; poll_frequency_ms=500, speed_window_seconds=30)
 
@@ -128,15 +211,12 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
     
     if folder_mode
         # Find all .db files in folder
-        available_dbs = filter(readdir(db_path)) do f
-            endswith(f, ".db")
-        end
-        available_dbs = map(f -> joinpath(db_path, f), available_dbs)
-        
+        available_dbs = _discover_db_files(db_path)
+
         if isempty(available_dbs)
             error("No .db files found in folder: $db_path")
         end
-        
+
         active_tab = 1
     else
         # Single file mode
@@ -146,27 +226,30 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
         available_dbs = [db_path]
         active_tab = 1
     end
-    
-    # Initialize first database
-    db_handle = Database.init_db!(available_dbs[1])
-    
-    # Create model
+
+    db_handles = _open_dashboard_handles(available_dbs)
+    primary_db_path = folder_mode ? db_path : available_dbs[1]
+    primary_handle = folder_mode ? nothing : db_handles[available_dbs[1]]
+
     model = ProgressDashboard(
-        db_path = available_dbs[1],
-        db_handle = db_handle,
+        db_path = primary_db_path,
+        db_handle = primary_handle,
+        db_handles = db_handles,
         folder_mode = folder_mode,
         folder_path = folder_mode ? db_path : "",
         available_dbs = available_dbs,
         active_tab = active_tab,
         poll_frequency_ms = poll_frequency_ms,
-        speed_window_seconds = speed_window_seconds
+        speed_window_seconds = speed_window_seconds,
     )
-    
-    # Run the app
-    Tachikoma.app(model; fps=60)
-    
-    # Cleanup
-    Database.close_db!(db_handle)
+
+    try
+        Tachikoma.app(model; fps=60)
+    finally
+        _close_dashboard_handles!(db_handles)
+    end
+
+    return nothing
 end
 
 """
@@ -187,44 +270,76 @@ function _poll_database!(m::ProgressDashboard)
         return
     end
     m._last_poll = current_time
-    
-    m.db_handle === nothing && return
-    handle = m.db_handle::Database.DBHandle
 
-    # Refresh running experiments
-    experiments = Database.get_running_experiments(handle)
+    handle_pairs = _dashboard_handle_pairs(m)
+    isempty(handle_pairs) && return
 
-    m.running_experiments = map(eachrow(experiments)) do exp
-        speeds = Database.calculate_speeds(handle, exp.id; window_seconds=m.speed_window_seconds)
-        sparkline = Database.get_recent_speeds(handle, exp.id; n=20, window_seconds=60)
-        
-        # Calculate ETA
+    running_frames = DataFrame[]
+    all_frames = DataFrame[]
+    for (source_db_path, handle) in handle_pairs
+        experiments = Database.get_running_experiments(handle)
+        if !isempty(experiments)
+            experiments.source_db_path = fill(source_db_path, nrow(experiments))
+            push!(running_frames, experiments)
+        end
+
+        all_exps = Database.get_all_experiments(handle; limit = 100)
+        if !isempty(all_exps)
+            all_exps.source_db_path = fill(source_db_path, nrow(all_exps))
+            push!(all_frames, all_exps)
+        end
+    end
+
+    running_experiments_df = isempty(running_frames) ? DataFrame() : vcat(running_frames..., cols = :union)
+    if !isempty(running_experiments_df)
+        sort!(running_experiments_df, :started_at, rev = true)
+    end
+
+    m.running_experiments = map(eachrow(running_experiments_df)) do exp
+        source_db_path = String(exp.source_db_path)
+        exp_handle = _handle_for_db_path(m, source_db_path)
+        speeds = if exp_handle === nothing
+            (total_avg_speed = 0.0, short_avg_speed = 0.0)
+        else
+            Database.calculate_speeds(exp_handle, exp.id; window_seconds = m.speed_window_seconds)
+        end
+        sparkline = if exp_handle === nothing
+            Float64[]
+        else
+            Database.get_recent_speeds(exp_handle, exp.id; n = 20, window_seconds = 60)
+        end
+
         remaining_steps = exp.total_steps - exp.current_step
         eta = if speeds.short_avg_speed > 0
             remaining_steps / speeds.short_avg_speed
         else
             nothing
         end
-        
-        ExperimentSummary(
+
+        return ExperimentSummary(
             id = ismissing(exp.id) ? "" : exp.id,
             name = ismissing(exp.name) ? "Unknown" : exp.name,
+            source_db_path = source_db_path,
             progress_pct = ismissing(exp.progress_pct) ? 0.0 : exp.progress_pct,
             status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
             started_at = exp.started_at,
             total_avg_speed = speeds.total_avg_speed,
             short_avg_speed = speeds.short_avg_speed,
             eta_seconds = eta,
-            sparkline = sparkline
+            sparkline = sparkline,
         )
     end
-    
-    # Refresh admin list (all experiments)
-    all_exps = Database.get_all_experiments(handle; limit=100)
-    m.admin_experiments = map(eachrow(all_exps)) do exp
-        ExperimentAdminView(
+
+    all_exps_df = isempty(all_frames) ? DataFrame() : vcat(all_frames..., cols = :union)
+    if !isempty(all_exps_df)
+        sort!(all_exps_df, :started_at, rev = true)
+    end
+
+    m.admin_experiments = map(eachrow(all_exps_df)) do exp
+        return ExperimentAdminView(
             id = ismissing(exp.id) ? "" : exp.id,
             name = ismissing(exp.name) ? "Unknown" : exp.name,
+            source_db_path = String(exp.source_db_path),
             description = ismissing(exp.description) ? "" : exp.description,
             total_tasks = ismissing(exp.total_tasks) ? 0 : exp.total_tasks,
             total_steps = ismissing(exp.total_steps) ? 0 : exp.total_steps,

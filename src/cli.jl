@@ -7,15 +7,15 @@ function _help_text()
         mpm - MultiProgressManager Dashboard
 
         Usage:
-          mpm <database_file.db>     View single experiment database
-          mpm <folder_path>          View folder of experiment databases
-          mpm .                      View ./progresslogs/ folder (if exists)
+          mpm <database_file.db>     View a single experiment database
+          mpm <folder_path>          View all experiment databases in a folder
+          mpm .                      View the default experiment DB folder
           mpm --help                 Show this help message
 
         Examples:
           mpm ./progresslogs/experiment1.db
           mpm ./progresslogs/
-          mpm ~/.local/share/MultiProgressManagers/default.db
+          mpm ~/.local/share/MultiProgressManagers/
 
         Keyboard Shortcuts (in dashboard):
           [1-2]     Switch tabs (Runs, Details)
@@ -25,14 +25,29 @@ function _help_text()
         """
 end
 
+function _db_files_in_directory(path::String)
+    db_files = filter(readdir(path; join = true)) do file_path
+        return endswith(lowercase(file_path), ".db")
+    end
+    sort!(db_files)
+    return db_files
+end
+
 function _default_dashboard_path()
     if isdir("./progresslogs")
-        return "./progresslogs"
+        db_files = _db_files_in_directory("./progresslogs")
+        if !isempty(db_files)
+            return "./progresslogs"
+        end
     end
+
     cache_dir = get(ENV, "XDG_DATA_HOME", joinpath(homedir(), ".local", "share"))
-    default_db = joinpath(cache_dir, "MultiProgressManagers", "default.db")
-    if isfile(default_db)
-        return default_db
+    default_dir = joinpath(cache_dir, "MultiProgressManagers")
+    if isdir(default_dir)
+        db_files = _db_files_in_directory(default_dir)
+        if !isempty(db_files)
+            return default_dir
+        end
     end
     return nothing
 end
@@ -41,8 +56,8 @@ function _resolve_dashboard_path(path::String)
     if path == "."
         default_path = _default_dashboard_path()
         if default_path === nothing
-            println("Error: No ./progresslogs/ directory found and no default database exists.")
-            println("Run an experiment first, or specify a database file path.")
+            println("Error: No experiment databases found in ./progresslogs/ or the default data directory.")
+            println("Run an experiment first, or specify a database file or directory path.")
             return nothing
         end
         return default_path
@@ -53,7 +68,7 @@ function _resolve_dashboard_path(path::String)
     end
 
     if isdir(path)
-        db_files = filter(f -> endswith(f, ".db"), readdir(path; join = true))
+        db_files = _db_files_in_directory(path)
         if isempty(db_files)
             println("Error: No .db files found in directory: $path")
             return nothing
