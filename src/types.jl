@@ -10,7 +10,7 @@ end
 struct ProgressUpdate
     task_number::Int
     current_step::Int
-    total_steps::Int
+    total_steps::Union{Int,Nothing}
     message::String
 end
 

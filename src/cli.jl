@@ -25,6 +25,14 @@ function _help_text()
     """
 end
 
+function _db_files_in_directory(path::String)
+    db_files = filter(readdir(path; join = true)) do entry
+        return endswith(lowercase(entry), ".db")
+    end
+    sort!(db_files)
+    return db_files
+end
+
 function _resolve_dashboard_path(path::String)
     if path == "."
         path = abspath(".")
