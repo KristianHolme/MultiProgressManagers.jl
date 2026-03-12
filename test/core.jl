@@ -338,6 +338,37 @@ end
     end
 end
 
+@testset "update! validates monotonic and nonnegative inputs" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("ValidationTest", 1; db_path = test_db)
+    try
+        MPM.update!(manager, 1; step = 5, total_steps = 10, message = "initial")
+        MPM.update!(manager, 1; step = 6, total_steps = 8, message = "shrunk total")
+
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        row = tasks[1, :]
+        @test row.current_step == 6
+        @test row.total_steps == 8
+        @test coalesce(get(row, :display_message, missing), "") == "shrunk total"
+
+        @test_throws ArgumentError MPM.update!(manager, 1; step = -1)
+        @test_throws ArgumentError MPM.update!(manager, 1; step = 6, total_steps = -1)
+        @test_throws ArgumentError MPM.update!(manager, 1; step = 5, message = "regression")
+
+        @test manager.task_status[1].current_step == 6
+        @test manager.task_status[1].total_steps == 8
+
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        row = tasks[1, :]
+        @test row.current_step == 6
+        @test row.total_steps == 8
+        @test coalesce(get(row, :display_message, missing), "") == "shrunk total"
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
 @testset "finish!" begin
     test_db = tempname() * ".db"
     manager = MPM.ProgressManager("FinishTest", 2; db_path = test_db)
