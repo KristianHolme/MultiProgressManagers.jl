@@ -10,6 +10,9 @@ A lightweight progress tracking system for Julia with a Tachikoma.jl-based dashb
 - **⚡ Simple API**: In-process: `update!`, `finish!`, `fail!`. Workers: `ProgressTask` + `update!`, `finish!`, `fail!`
 - **🔀 Distributed & Threads**: Single DB writer on the master; workers get a `ProgressTask` via `get_task(manager, id, :remote)` or `:local` and send updates over a channel
 
+## Demo
+![recording_small](https://github.com/user-attachments/assets/e754d071-adb2-499a-b198-bebeb82c1585)
+
 ## Installation
 
 **Package** (for use in Julia scripts/REPL):
