@@ -2,27 +2,32 @@
 
 A lightweight progress tracking system for Julia with a Tachikoma.jl-based dashboard and SQLite persistence.
 
-> **Note**: This is version 0.1.0, a simplified rewrite focused on multi-task experiment tracking. If you need the old ProgressMeter-based implementation, use version 0.0.x.
-
 ## Features
 
 - **📊 Tachikoma Dashboard**: Clean 2-tab terminal UI for monitoring experiments
-- **💾 SQLite Persistence**: Current state stored in SQLite (no history for MWP)
+- **💾 SQLite Persistence**: Current state stored in SQLite
 - **🔄 Multi-Task Support**: Track parallel sub-tasks within a single experiment
 - **⚡ Simple API**: In-process: `update!`, `finish!`, `fail!`. Workers: `ProgressTask` + `update!`, `finish!`, `fail!`
 - **🔀 Distributed & Threads**: Single DB writer on the master; workers get a `ProgressTask` via `get_task(manager, id, :remote)` or `:local` and send updates over a channel
 
 ## Installation
 
-This package is not yet registered. Add it from the `tachikoma-rewrite` branch:
+**Package** (for use in Julia scripts/REPL):
 
 ```julia
 using Pkg
-# From git (replace with your repo URL):
-Pkg.add(url = "https://github.com/<owner>/MultiProgressManagers.jl", rev = "tachikoma-rewrite")
-# Or from a local clone:
-# Pkg.develop(path = "/path/to/MultiProgressManagers")
+Pkg.add("MultiProgressManagers")
 ```
+
+**App / CLI** (optional, for the `mpm` dashboard from the shell):
+
+```julia
+using Pkg
+Pkg.Apps.add("MultiProgressManagers")
+```
+
+Ensure `~/.julia/bin` is on your `PATH`. Then run `mpm <db_path>` or `mpm --help`.  
+You can also open the dashboard from Julia without the app: `view_dashboard(db_path)` (see Quick Start).
 
 ## Quick Start
 
@@ -81,14 +86,8 @@ See `examples/multithreading.jl` (threads + direct `update!`) and `examples/dist
 
 ### Viewing the Dashboard
 
-```bash
-# From shell:
-mpm ./progresslogs/experiment1.db
-
-# Or from Julia:
-using MultiProgressManagers
-view_dashboard("./progresslogs/experiment1.db")
-```
+From the shell: `mpm ./progresslogs/experiment1.db` (requires the app; see Installation).  
+From Julia: `using MultiProgressManagers; view_dashboard("./progresslogs/experiment1.db")`.
 
 ## Dashboard Tabs
 
@@ -119,15 +118,17 @@ Shows detailed view of selected experiment:
 ```julia
 ProgressManager(name::String, num_tasks::Int;
                 description::String = "",
-                db_path::Union{String,Nothing} = nothing)
+                db_path::Union{String,Nothing} = nothing,
+                task_descriptions::Vector{String} = String[])
 ```
 
 **Parameters:**
 
 - `name`: Human-readable experiment name (shown in dashboard)
-- `num_tasks` / `total_tasks`: Number of parallel sub-tasks in this experiment
+- `num_tasks`: Number of parallel sub-tasks in this experiment
 - `description`: Optional longer description
 - `db_path`: Optional path to SQLite database file. When omitted, the package derives a default path from the experiment name.
+- `task_descriptions`: Optional vector of per-task labels (length must equal `num_tasks`).
 
 **Returns:** A `ProgressManager` instance for tracking this experiment.
 
@@ -187,76 +188,49 @@ Explicitly mark a task as completed. Use this when you call `update!` from the s
 ### Finishing an Experiment
 
 ```julia
-finish!(manager::ProgressManager)
+finish!(manager::ProgressManager; message::String = "Completed successfully")
 ```
 
-Mark the entire experiment as completed. This sets the experiment status to "completed" and marks all remaining tasks as done.
+Mark the entire experiment as completed. This sets the experiment status to "completed" and marks all remaining tasks as done. Optional `message` is stored as the experiment's final message.
 
-### Failing a Task
+### Failing a Task or Experiment
 
 ```julia
 fail!(manager::ProgressManager, task_number::Int; message::String = "Task failed")
 fail!(manager::ProgressManager; message::String = "Experiment failed")
 ```
 
-Mark either a specific task or the entire experiment as failed with a message.
-
-## Database Schema
-
-The SQLite database uses a simplified 2-table schema:
-
-### experiments table
-
-- `id`: UUID primary key
-- `name`: Experiment name
-- `description`: Optional description
-- `total_tasks`: Number of sub-tasks
-- `status`: running, completed, or failed
-- `started_at`: Unix timestamp when experiment started
-- `finished_at`: Unix timestamp when experiment completed (NULL if running)
-- `final_message`: Optional message (e.g. "Completed successfully" or error)
-
-### tasks table
-
-- `id`: UUID primary key
-- `experiment_id`: Foreign key to experiments table
-- `task_number`: 1-indexed position in task list
-- `total_steps`: Total steps for this task
-- `current_step`: Current progress (0 to total_steps)
-- `status`: pending, running, completed, or failed
-- `started_at`: Unix timestamp when task started
-- `last_updated`: Unix timestamp of last progress update
-- `display_message`: Optional message (e.g. phase or status) shown in dashboard
-
-## CLI Tool: mpm
-
-The `mpm` command provides easy dashboard access:
-
-```bash
-# View experiment database
-mpm ./progresslogs/experiment1.db
-
-# Show help
-mpm --help
-```
-
-Install the CLI (installs the `mpm` executable to `~/.julia/bin`). The package must already be in your environment (see Installation above; use the `tachikoma-rewrite` branch):
-
-```julia
-using Pkg
-Pkg.Apps.add("https://github.com/KristianHolme/MultiProgressManagers.jl", rev = "tachikoma-rewrite")
-```
-
-Ensure `~/.julia/bin` is on your PATH. Then run `mpm <db_path>` or `mpm --help`.
+Mark either a specific task or the entire experiment as failed with a message. The code also provides overloads that take an `Exception` or a positional `error_message::String`; these ultimately set the same `message` used in the DB.
 
 ## Keyboard Shortcuts
 
-In the dashboard:
+**Global**
 
-- `1-2`: Switch between Runs and Details tabs
-- `↑↓`: Navigate experiments/tasks
-- `Enter`: Select experiment (in Runs tab)
-- `q`: Quit
+- `q` / `Q`: Quit
+- `r`: Refresh (reload data from database)
+
+**Tabs**
+
+- `1` or `F1`: Runs tab
+- `2` or `F2`: Details (Running) tab
+- `←` / `h`: Previous tab
+- `→` / `l`: Next tab
+
+**Runs tab**
+
+- `↑` / `↓` or `Ctrl+k` / `Ctrl+j`: Move selection; the highlighted experiment is the one shown in the Details tab
+- `f`: Mark selected running experiment as failed (opens confirmation modal)
+
+**Confirmation modal** (after pressing `f`)
+
+- `Enter`: Confirm (mark as failed) or cancel, depending on highlighted option
+- `←` / `h` or `→` / `l`: Switch between Cancel and Confirm
+- `Escape` or `c`: Cancel and close modal
+
+**Details (Running) tab**
+
+- `↑` / `↓` or `Ctrl+k` / `Ctrl+j`: Scroll the task list
+- `a` / `d`: Shrink or grow the message column width
 
 ## Configuration
 
