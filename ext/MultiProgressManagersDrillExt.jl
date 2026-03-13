@@ -2,12 +2,11 @@ module MultiProgressManagersDrillExt
 
 using MultiProgressManagers
 import Drill
-using Distributed
 
 export DrillWorkerProgressCallback, create_dril_callback
 
-mutable struct DrillWorkerProgressCallback <: Drill.AbstractCallback
-    task::ProgressTask
+mutable struct DrillWorkerProgressCallback{T<:ProgressTask} <: Drill.AbstractCallback
+    task::T
     _current_step::Int
     _total_steps::Union{Int, Nothing}
 end

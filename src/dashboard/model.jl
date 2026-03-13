@@ -18,30 +18,30 @@ const tsplit = Tachikoma.split
 # === View Types ===
 
 @kwdef struct ExperimentSummary
-    id::Union{String,Missing}
-    name::Union{String,Missing}
+    id::String = ""
+    name::String = ""
     source_db_path::String = ""
-    progress_pct::Union{Float64,Missing}
-    status::Union{Symbol,Missing}
-    started_at::Union{DateTime,Missing}
-    total_avg_speed::Union{Float64,Missing}
-    short_avg_speed::Union{Float64,Missing}
-    eta_seconds::Union{Float64,Nothing,Missing}
-    sparkline::Vector{Float64}
+    progress_pct::Float64 = 0.0
+    status::Symbol = :unknown
+    started_at::Union{DateTime,Nothing} = nothing
+    total_avg_speed::Float64 = 0.0
+    short_avg_speed::Float64 = 0.0
+    eta_seconds::Union{Float64,Nothing} = nothing
+    sparkline::Vector{Float64} = Float64[]
 end
 
 @kwdef struct ExperimentAdminView
-    id::Union{String,Missing}
-    name::Union{String,Missing}
+    id::String = ""
+    name::String = ""
     source_db_path::String = ""
-    description::Union{String,Missing}
-    total_tasks::Union{Int,Missing}
-    total_steps::Union{Int,Missing}
-    current_step::Union{Int,Missing}
-    completed_tasks::Union{Int,Missing}
-    status::Union{Symbol,Missing}
-    started_at::Union{DateTime,Missing}
-    finished_at::Union{DateTime,Nothing,Missing}
+    description::String = ""
+    total_tasks::Int = 0
+    total_steps::Int = 0
+    current_step::Int = 0
+    completed_tasks::Int = 0
+    status::Symbol = :unknown
+    started_at::Union{DateTime,Nothing} = nothing
+    finished_at::Union{DateTime,Nothing} = nothing
 end
 
 # === Dashboard Model ===
@@ -65,7 +65,6 @@ end
     # Configurable update frequency (like btop)
     poll_frequency_ms::Int = 500  # Default: poll DB twice per second
     _last_poll::Float64 = 0.0
-    _poll_timer::Float64 = 0.0
     folder_discovery_interval_ms::Int = 5000  # Folder mode: re-scan for .db files at this interval
     _last_folder_discover::Float64 = 0.0
 
@@ -100,14 +99,19 @@ end
     _task_queue::TaskQueue = TaskQueue()
     
     # Cache
-    _cached_detail_experiment::Union{String,Nothing} = nothing
-    _cached_detail_history::Vector = []
-    _cached_preview_stats::Union{NamedTuple,Nothing} = nothing
-    _cached_preview_running::Union{DataFrames.DataFrame,Nothing} = nothing
-    _last_preview_refresh::Float64 = 0.0
+    _selected_tasks::Vector{Database.TaskSnapshot} = Database.TaskSnapshot[]
+    _selected_tasks_loaded::Bool = false
 end
 
 # === Helper Functions ===
+
+function _normalized_datetime(value)::Union{DateTime,Nothing}
+    if value === nothing || value === missing
+        return nothing
+    end
+
+    return value
+end
 
 function _discover_db_files(folder_path::String)
     db_files = filter(readdir(folder_path; join = true)) do file_path
@@ -162,13 +166,13 @@ function _db_path_for_experiment(m::ProgressDashboard, experiment_id::String)
     isempty(experiment_id) && return nothing
 
     for experiment in m.admin_experiments
-        if !ismissing(experiment.id) && experiment.id == experiment_id
+        if experiment.id == experiment_id
             return experiment.source_db_path
         end
     end
 
     for experiment in m.running_experiments
-        if !ismissing(experiment.id) && experiment.id == experiment_id
+        if experiment.id == experiment_id
             return experiment.source_db_path
         end
     end
@@ -187,6 +191,169 @@ function _handle_for_experiment(m::ProgressDashboard, experiment_id::String)
     end
 
     return _handle_for_db_path(m, db_path)
+end
+
+function _refresh_folder_databases!(m::ProgressDashboard, current_time::Float64)
+    if !m.folder_mode
+        return nothing
+    end
+
+    if (current_time - m._last_folder_discover) * 1000 < m.folder_discovery_interval_ms
+        return nothing
+    end
+
+    new_dbs = _discover_db_files(m.folder_path)
+    removed = setdiff(m.available_dbs, new_dbs)
+    added = setdiff(new_dbs, m.available_dbs)
+
+    for path in removed
+        if haskey(m.db_handles, path)
+            Database.close_db!(m.db_handles[path])
+            delete!(m.db_handles, path)
+        end
+    end
+
+    for path in added
+        m.db_handles[path] = Database.init_db!(path)
+    end
+
+    m.available_dbs = new_dbs
+    m._last_folder_discover = current_time
+    return nothing
+end
+
+function _collect_experiment_frames(handle_pairs)
+    running_frames = DataFrame[]
+    all_frames = DataFrame[]
+
+    for (source_db_path, handle) in handle_pairs
+        experiments = Database.get_running_experiments(handle)
+        if !isempty(experiments)
+            experiments.source_db_path = fill(source_db_path, nrow(experiments))
+            push!(running_frames, experiments)
+        end
+
+        all_exps = Database.get_all_experiments(handle; limit = 100)
+        if !isempty(all_exps)
+            all_exps.source_db_path = fill(source_db_path, nrow(all_exps))
+            push!(all_frames, all_exps)
+        end
+    end
+
+    running_experiments_df = isempty(running_frames) ? DataFrame() : vcat(running_frames..., cols = :union)
+    if !isempty(running_experiments_df)
+        sort!(running_experiments_df, :started_at, rev = true)
+    end
+
+    all_experiments_df = isempty(all_frames) ? DataFrame() : vcat(all_frames..., cols = :union)
+    if !isempty(all_experiments_df)
+        sort!(all_experiments_df, :started_at, rev = true)
+    end
+
+    return running_experiments_df, all_experiments_df
+end
+
+function _build_running_experiments(
+    m::ProgressDashboard,
+    running_experiments_df::DataFrame,
+)
+    return map(eachrow(running_experiments_df)) do exp
+        source_db_path = String(exp.source_db_path)
+        exp_handle = _handle_for_db_path(m, source_db_path)
+        speeds = if exp_handle === nothing
+            (total_avg_speed = 0.0, short_avg_speed = 0.0)
+        else
+            Database.calculate_speeds(exp_handle, exp.id; window_seconds = m.speed_window_seconds)
+        end
+        sparkline = if exp_handle === nothing
+            Float64[]
+        else
+            Database.get_recent_speeds(
+                exp_handle,
+                exp.id;
+                n = 20,
+                window_seconds = m.speed_window_seconds,
+            )
+        end
+
+        remaining_steps = exp.total_steps - exp.current_step
+        eta_seconds = if speeds.short_avg_speed > 0
+            remaining_steps / speeds.short_avg_speed
+        else
+            nothing
+        end
+
+        return ExperimentSummary(
+            id = ismissing(exp.id) ? "" : String(exp.id),
+            name = ismissing(exp.name) ? "Unknown" : String(exp.name),
+            source_db_path = source_db_path,
+            progress_pct = ismissing(exp.progress_pct) ? 0.0 : Float64(exp.progress_pct),
+            status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
+            started_at = _normalized_datetime(exp.started_at),
+            total_avg_speed = speeds.total_avg_speed,
+            short_avg_speed = speeds.short_avg_speed,
+            eta_seconds = eta_seconds,
+            sparkline = sparkline,
+        )
+    end
+end
+
+function _build_admin_experiments(all_experiments_df::DataFrame)
+    return map(eachrow(all_experiments_df)) do exp
+        return ExperimentAdminView(
+            id = ismissing(exp.id) ? "" : String(exp.id),
+            name = ismissing(exp.name) ? "Unknown" : String(exp.name),
+            source_db_path = String(exp.source_db_path),
+            description = ismissing(exp.description) ? "" : String(exp.description),
+            total_tasks = ismissing(exp.total_tasks) ? 0 : Int(exp.total_tasks),
+            total_steps = ismissing(exp.total_steps) ? 0 : Int(exp.total_steps),
+            current_step = ismissing(exp.current_step) ? 0 : Int(exp.current_step),
+            completed_tasks = ismissing(exp.completed_tasks) ? 0 : Int(exp.completed_tasks),
+            status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
+            started_at = _normalized_datetime(exp.started_at),
+            finished_at = _normalized_datetime(exp.finished_at),
+        )
+    end
+end
+
+function _sync_selected_experiment!(m::ProgressDashboard)
+    if isempty(m.admin_experiments)
+        m.selected_experiment_id = ""
+        m.runs_selected = 0
+        return nothing
+    end
+
+    selected_index = findfirst(m.admin_experiments) do exp
+        return exp.id == m.selected_experiment_id
+    end
+    if selected_index === nothing
+        m.runs_selected = 1
+        top_experiment = m.admin_experiments[1]
+        m.selected_experiment_id = top_experiment.id
+    else
+        m.runs_selected = selected_index
+    end
+
+    return nothing
+end
+
+function _refresh_selected_tasks!(m::ProgressDashboard)
+    if isempty(m.selected_experiment_id)
+        empty!(m._selected_tasks)
+        m._selected_tasks_loaded = false
+        return nothing
+    end
+
+    handle = _handle_for_experiment(m, m.selected_experiment_id)
+    if handle === nothing
+        empty!(m._selected_tasks)
+        m._selected_tasks_loaded = false
+        return nothing
+    end
+
+    m._selected_tasks = Database.get_task_snapshots(handle, m.selected_experiment_id)
+    m._selected_tasks_loaded = true
+    return nothing
 end
 
 """
@@ -269,112 +436,28 @@ end
 # === Poll Database ===
 
 function _poll_database!(m::ProgressDashboard)
-    # Only poll at configured frequency
     current_time = time()
     if (current_time - m._last_poll) * 1000 < m.poll_frequency_ms
         return
     end
     m._last_poll = current_time
 
-    # Folder mode: re-discover .db files at relaxed interval so new experiments appear
-    if m.folder_mode && (current_time - m._last_folder_discover) * 1000 >= m.folder_discovery_interval_ms
-        new_dbs = _discover_db_files(m.folder_path)
-        removed = setdiff(m.available_dbs, new_dbs)
-        added = setdiff(new_dbs, m.available_dbs)
-        for path in removed
-            if haskey(m.db_handles, path)
-                Database.close_db!(m.db_handles[path])
-                delete!(m.db_handles, path)
-            end
-        end
-        for path in added
-            m.db_handles[path] = Database.init_db!(path)
-        end
-        m.available_dbs = new_dbs
-        m._last_folder_discover = current_time
-    end
-
+    _refresh_folder_databases!(m, current_time)
     handle_pairs = _dashboard_handle_pairs(m)
-    isempty(handle_pairs) && return
-
-    running_frames = DataFrame[]
-    all_frames = DataFrame[]
-    for (source_db_path, handle) in handle_pairs
-        experiments = Database.get_running_experiments(handle)
-        if !isempty(experiments)
-            experiments.source_db_path = fill(source_db_path, nrow(experiments))
-            push!(running_frames, experiments)
-        end
-
-        all_exps = Database.get_all_experiments(handle; limit = 100)
-        if !isempty(all_exps)
-            all_exps.source_db_path = fill(source_db_path, nrow(all_exps))
-            push!(all_frames, all_exps)
-        end
+    if isempty(handle_pairs)
+        m.running_experiments = ExperimentSummary[]
+        m.admin_experiments = ExperimentAdminView[]
+        m.selected_experiment_id = ""
+        m.runs_selected = 0
+        empty!(m._selected_tasks)
+        m._selected_tasks_loaded = false
+        return nothing
     end
 
-    running_experiments_df = isempty(running_frames) ? DataFrame() : vcat(running_frames..., cols = :union)
-    if !isempty(running_experiments_df)
-        sort!(running_experiments_df, :started_at, rev = true)
-    end
-
-    m.running_experiments = map(eachrow(running_experiments_df)) do exp
-        source_db_path = String(exp.source_db_path)
-        exp_handle = _handle_for_db_path(m, source_db_path)
-        speeds = if exp_handle === nothing
-            (total_avg_speed = 0.0, short_avg_speed = 0.0)
-        else
-            Database.calculate_speeds(exp_handle, exp.id; window_seconds = m.speed_window_seconds)
-        end
-        sparkline = if exp_handle === nothing
-            Float64[]
-        else
-            Database.get_recent_speeds(exp_handle, exp.id; n = 20, window_seconds = 60)
-        end
-
-        remaining_steps = exp.total_steps - exp.current_step
-        eta = if speeds.short_avg_speed > 0
-            remaining_steps / speeds.short_avg_speed
-        else
-            nothing
-        end
-
-        return ExperimentSummary(
-            id = ismissing(exp.id) ? "" : exp.id,
-            name = ismissing(exp.name) ? "Unknown" : exp.name,
-            source_db_path = source_db_path,
-            progress_pct = ismissing(exp.progress_pct) ? 0.0 : exp.progress_pct,
-            status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
-            started_at = exp.started_at,
-            total_avg_speed = speeds.total_avg_speed,
-            short_avg_speed = speeds.short_avg_speed,
-            eta_seconds = eta,
-            sparkline = sparkline,
-        )
-    end
-
-    all_exps_df = isempty(all_frames) ? DataFrame() : vcat(all_frames..., cols = :union)
-    if !isempty(all_exps_df)
-        sort!(all_exps_df, :started_at, rev = true)
-    end
-
-    m.admin_experiments = map(eachrow(all_exps_df)) do exp
-        return ExperimentAdminView(
-            id = ismissing(exp.id) ? "" : exp.id,
-            name = ismissing(exp.name) ? "Unknown" : exp.name,
-            source_db_path = String(exp.source_db_path),
-            description = ismissing(exp.description) ? "" : exp.description,
-            total_tasks = ismissing(exp.total_tasks) ? 0 : exp.total_tasks,
-            total_steps = ismissing(exp.total_steps) ? 0 : exp.total_steps,
-            current_step = ismissing(exp.current_step) ? 0 : exp.current_step,
-            completed_tasks = ismissing(exp.completed_tasks) ? 0 : exp.completed_tasks,
-            status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
-            started_at = exp.started_at,
-            finished_at = exp.finished_at,
-        )
-    end
+    running_experiments_df, all_experiments_df = _collect_experiment_frames(handle_pairs)
+    m.running_experiments = _build_running_experiments(m, running_experiments_df)
+    m.admin_experiments = _build_admin_experiments(all_experiments_df)
     
-    # Ensure admin_selected stays valid after list refresh
     if isempty(m.admin_experiments)
         m.admin_selected = 0
     elseif m.admin_selected > length(m.admin_experiments)
@@ -382,22 +465,7 @@ function _poll_database!(m::ProgressDashboard)
     end
 
     previous_selected_id = m.selected_experiment_id
-    if isempty(m.admin_experiments)
-        m.selected_experiment_id = ""
-        m.runs_selected = 0
-    else
-        selected_index = findfirst(m.admin_experiments) do exp
-            return !ismissing(exp.id) && exp.id == m.selected_experiment_id
-        end
-        if selected_index === nothing
-            m.runs_selected = 1
-            top_experiment = m.admin_experiments[1]
-            m.selected_experiment_id = ismissing(top_experiment.id) ? "" : top_experiment.id
-        else
-            m.runs_selected = selected_index
-        end
-    end
-
+    _sync_selected_experiment!(m)
     if m.selected_experiment_id != previous_selected_id
         m.task_scroll_offset = 0
         m.running_focus = 2
@@ -405,6 +473,9 @@ function _poll_database!(m::ProgressDashboard)
             m.selected_task = 0
         end
     end
+
+    _refresh_selected_tasks!(m)
+    return nothing
 end
 
 # === Formatting Helpers ===
@@ -426,7 +497,9 @@ function format_eta(seconds::Union{Float64,Nothing})::String
 end
 
 function format_speed(steps_per_sec::Float64)::String
-    if steps_per_sec < 1.0
+    if !(steps_per_sec > 0.0)
+        return "N/A"
+    elseif steps_per_sec < 1.0
         return @sprintf("%.2f s/step", 1.0 / steps_per_sec)
     elseif steps_per_sec < 1000
         return @sprintf("%.1f step/s", steps_per_sec)
@@ -435,7 +508,7 @@ function format_speed(steps_per_sec::Float64)::String
     end
 end
 
-function format_duration(::Missing, _)::String
+function format_duration(::Nothing, _)::String
     return "N/A"
 end
 
@@ -455,8 +528,8 @@ function format_duration(started_at::DateTime, finished_at::Union{DateTime,Nothi
     end
 end
 
-function format_datetime(dt::Union{DateTime,Missing})::String
-    ismissing(dt) && return "Unknown"
+function format_datetime(dt::Union{DateTime,Nothing})::String
+    dt === nothing && return "Unknown"
     return Dates.format(dt, "HH:MM:SS")
 end
 
@@ -464,8 +537,8 @@ end
 Format datetime for the Started column in tab 1. When include_date is true
 (e.g. oldest experiment was not started today), include date to disambiguate.
 """
-function format_datetime_for_started_column(dt::Union{DateTime,Missing}, include_date::Bool)::String
-    ismissing(dt) && return "Unknown"
+function format_datetime_for_started_column(dt::Union{DateTime,Nothing}, include_date::Bool)::String
+    dt === nothing && return "Unknown"
     if include_date
         return Dates.format(dt, "yyyy-mm-dd HH:MM")
     end

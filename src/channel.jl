@@ -1,32 +1,46 @@
 # ProgressTask channel API: get_task, update!, finish!, fail!
-# Single listener reads from a sink; pump tasks forward from local/remote channels into the sink.
-
-using Distributed
+# Single listener reads from a sink; local workers write directly and extension-backed
+# remote workers pump into the same sink.
 
 const DEFAULT_CHANNEL_CAPACITY = 64
 
-function _listener_loop(manager::ProgressManager)
-    sink = manager._sink
+function _start_listener_if_needed!(manager::ProgressManager)
+    if manager._sink === nothing
+        sink = LocalProgressChannel(DEFAULT_CHANNEL_CAPACITY)
+        manager._sink = sink
+        manager._listener_task = @async _listener_loop(manager, sink)
+    end
+
+    return manager._sink::LocalProgressChannel
+end
+
+function _handle_progress_message!(manager::ProgressManager, msg::ProgressMessage)
+    if msg isa ProgressUpdate
+        update!(
+            manager,
+            msg.task_number;
+            step = msg.current_step,
+            total_steps = msg.total_steps,
+            message = msg.message,
+        )
+        return false
+    end
+
+    if msg isa TaskFinished
+        finish!(manager, msg.task_number)
+        return true
+    end
+
+    fail!(manager, msg.task_number; message = msg.message)
+    return true
+end
+
+function _listener_loop(manager::ProgressManager, sink::LocalProgressChannel)
     terminal_count = 0
     try
         while true
             msg = take!(sink)
-            if msg isa ProgressUpdate
-                update!(
-                    manager,
-                    msg.task_number;
-                    step = msg.current_step,
-                    total_steps = msg.total_steps,
-                    message = msg.message,
-                )
-            elseif msg isa TaskFinished
-                finish!(manager, msg.task_number)
-                terminal_count += 1
-                if terminal_count >= manager.total_tasks
-                    break
-                end
-            elseif msg isa TaskFailed
-                fail!(manager, msg.task_number; message = msg.message)
+            if _handle_progress_message!(manager, msg)
                 terminal_count += 1
                 if terminal_count >= manager.total_tasks
                     break
@@ -41,7 +55,7 @@ function _listener_loop(manager::ProgressManager)
     return nothing
 end
 
-function _pump_loop(source, sink)
+function _pump_loop(source, sink::LocalProgressChannel)
     try
         while true
             msg = take!(source)
@@ -55,72 +69,22 @@ function _pump_loop(source, sink)
     return nothing
 end
 
-function _current_slot(::Nothing, ::Val{:local})
-    return nothing
-end
-
-function _current_slot(::Nothing, ::Val{:remote})
-    return nothing
-end
-
-function _current_slot(channels::Vector{Any}, ::Val{:local})
-    return channels[1]
-end
-
-function _current_slot(channels::Vector{Any}, ::Val{:remote})
-    return channels[2]
-end
-
-function _ensure_channels_vector!(::Nothing, manager::ProgressManager)
-    vec = Any[nothing, nothing]
-    manager._channels = vec
-    return vec
-end
-
-function _ensure_channels_vector!(channels::Vector{Any}, manager::ProgressManager)
-    return channels
-end
-
-function _get_or_create!(manager::ProgressManager, ::Val{:local}, ::Nothing)
-    channels = _ensure_channels_vector!(manager._channels, manager)
-    if manager._sink === nothing
-        manager._sink = Channel{ProgressMessage}(DEFAULT_CHANNEL_CAPACITY)
-        manager._listener_task = @async _listener_loop(manager)
+function _ensure_local_channel!(manager::ProgressManager)
+    return lock(manager._channel_lock) do
+        _get_or_create_local!(manager, manager._local_channel)
     end
-    local_ch = Channel{ProgressMessage}(DEFAULT_CHANNEL_CAPACITY)
-    push!(manager._pump_tasks, @async _pump_loop(local_ch, manager._sink))
-    channels[1] = local_ch
+end
+
+function _get_or_create_local!(manager::ProgressManager, ::Nothing)
+    sink = _start_listener_if_needed!(manager)
+    local_ch = LocalProgressChannel(DEFAULT_CHANNEL_CAPACITY)
+    push!(manager._pump_tasks, @async _pump_loop(local_ch, sink))
+    manager._local_channel = local_ch
     return local_ch
 end
 
-function _get_or_create!(manager::ProgressManager, ::Val{:local}, ch::Channel{ProgressMessage})
+function _get_or_create_local!(manager::ProgressManager, ch::LocalProgressChannel)
     return ch
-end
-
-function _get_or_create!(manager::ProgressManager, ::Val{:remote}, ::Nothing)
-    channels = _ensure_channels_vector!(manager._channels, manager)
-    if manager._sink === nothing
-        manager._sink = Channel{ProgressMessage}(DEFAULT_CHANNEL_CAPACITY)
-        manager._listener_task = @async _listener_loop(manager)
-    end
-    remote_ch = RemoteChannel(
-        () -> Channel{ProgressMessage}(DEFAULT_CHANNEL_CAPACITY),
-        myid(),
-    )
-    push!(manager._pump_tasks, @async _pump_loop(remote_ch, manager._sink))
-    channels[2] = remote_ch
-    return remote_ch
-end
-
-function _get_or_create!(manager::ProgressManager, ::Val{:remote}, ch)
-    return ch
-end
-
-function _ensure_channels!(manager::ProgressManager, type::Symbol)
-    return lock(manager._channel_lock) do
-        slot = _current_slot(manager._channels, Val(type))
-        return _get_or_create!(manager, Val(type), slot)
-    end
 end
 
 """
@@ -138,8 +102,22 @@ function get_task(manager::ProgressManager, task_number::Int, type::Symbol = :lo
     if type !== :local && type !== :remote
         throw(ArgumentError("type must be :local or :remote, got :$type"))
     end
-    ch = _ensure_channels!(manager, type)
-    return ProgressTask(task_number, ch)
+    if type === :local
+        ch = _ensure_local_channel!(manager)
+        return ProgressTask(task_number, ch)
+    end
+
+    distributed_ext = Base.get_extension(MultiProgressManagers, :MultiProgressManagersDistributedExt)
+    if distributed_ext === nothing
+        throw(
+            ArgumentError(
+                "Remote progress tasks require loading the Distributed extension. " *
+                "Load `Distributed` before requesting `get_task(manager, task_number, :remote)`.",
+            ),
+        )
+    end
+
+    return distributed_ext.get_remote_task(manager, task_number)
 end
 
 """
@@ -150,11 +128,11 @@ end
 Send a progress update for this task. The master's listener will call `update!` on the DB.
 """
 function update!(
-    task::ProgressTask;
+    task::ProgressTask{C};
     step::Int,
     total_steps::Union{Int,Nothing} = nothing,
     message::String = "",
-)
+) where {C}
     msg = ProgressUpdate(task.task_number, step, total_steps, message)
     put!(task.channel, msg)
     return nothing
@@ -165,7 +143,7 @@ end
 
 Signal that this task is complete. The master's listener will call `finish!` on the DB.
 """
-function finish!(task::ProgressTask)
+function finish!(task::ProgressTask{C}) where {C}
     put!(task.channel, TaskFinished(task.task_number))
     return nothing
 end
@@ -175,18 +153,22 @@ end
 
 Signal that this task has failed. The master's listener will call `fail!` on the DB.
 """
-function fail!(task::ProgressTask; message::String = "Task failed")
+function fail!(task::ProgressTask{C}; message::String = "Task failed") where {C}
     put!(task.channel, TaskFailed(task.task_number, message))
     return nothing
 end
 
-function fail!(task::ProgressTask, error::Exception; message::Union{String,Nothing} = nothing)
+function fail!(
+    task::ProgressTask{C},
+    error::Exception;
+    message::Union{String,Nothing} = nothing,
+) where {C}
     resolved_message = message === nothing ? sprint(showerror, error) : message
     fail!(task; message = resolved_message)
     return nothing
 end
 
-function fail!(task::ProgressTask, error_message::String)
+function fail!(task::ProgressTask{C}, error_message::String) where {C}
     fail!(task; message = error_message)
     return nothing
 end

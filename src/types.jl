@@ -2,7 +2,7 @@ struct TaskStatus
     task_id::String
     total_steps::Int
     current_step::Int
-    status::String
+    status::Symbol
     started_at::Float64
 end
 
@@ -26,11 +26,12 @@ struct TaskFailed
 end
 
 const ProgressMessage = Union{ProgressUpdate, TaskFinished, TaskFailed}
+const LocalProgressChannel = Channel{ProgressMessage}
 
 """Handle for a single task; workers use this to report progress via the channel."""
-struct ProgressTask
+struct ProgressTask{C}
     task_number::Int
-    channel::Any  # Channel{ProgressMessage} or RemoteChannel, depending on get_task(..., :local vs :remote)
+    channel::C
 end
 
 mutable struct ProgressManager
@@ -40,8 +41,8 @@ mutable struct ProgressManager
     start_time::Float64
     task_status::Dict{Int, TaskStatus}
     db_handle::Database.DBHandle
-    _channels::Union{Nothing,Vector{Any}}
-    _sink::Any
+    _local_channel::Union{LocalProgressChannel,Nothing}
+    _sink::Union{LocalProgressChannel,Nothing}
     _listener_task::Union{Task,Nothing}
     _pump_tasks::Vector{Task}
     _channel_lock::Base.Threads.ReentrantLock

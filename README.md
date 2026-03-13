@@ -59,7 +59,7 @@ finish!(manager)
 
 ### Worker-based progress (threads or Distributed)
 
-When work runs on other threads or processes, only the master touches the DB. Workers get a **ProgressTask** and send updates over a channel:
+When work runs on other threads or processes, only the master touches the DB. Workers get a **ProgressTask** and send updates over a channel. Load `Distributed` before requesting `:remote` tasks so the remote-worker extension is available:
 
 ```julia
 using MultiProgressManagers
@@ -85,7 +85,7 @@ pmap(i -> run_worker(tasks[i], 100), 1:8)
 finish!(manager)
 ```
 
-See `examples/multithreading.jl` (threads + direct `update!`) and `examples/distributed_pmap.jl` (Distributed + `ProgressTask`).
+See `examples/multithreading.jl` (threads + `ProgressTask` via `get_task(..., :local)`) and `examples/distributed_pmap.jl` (Distributed + `ProgressTask` via `get_task(..., :remote)`).
 
 ### Viewing the Dashboard
 
@@ -134,8 +134,6 @@ ProgressManager(name::String, num_tasks::Int;
 - `task_descriptions`: Optional vector of per-task labels (length must equal `num_tasks`).
 
 **Returns:** A `ProgressManager` instance for tracking this experiment.
-
-`create_experiment(...)` remains available as a deprecated compatibility alias.
 
 ### Updating Task Progress (in-process)
 

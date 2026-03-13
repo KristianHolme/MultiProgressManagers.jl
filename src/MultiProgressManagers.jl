@@ -23,15 +23,8 @@ export Database
 export ProgressManager, TaskStatus, ProgressTask, ProgressUpdate, TaskFinished, TaskFailed, ProgressMessage
 
 # API functions
-export create_experiment, update!, finish!, fail!
-export finish_task!, finish_experiment!, fail_task!
+export update!, finish!, fail!
 export get_task
 export view_dashboard, default_db_path
-
-const VERSION = v"0.1.0"
-
-function __init__()
-    return nothing
-end
 
 end # module

@@ -72,7 +72,7 @@ function _update_runs_tab!(m::ProgressDashboard, evt::KeyEvent)
     if evt.key == :char && evt.char == 'f'
         if m.runs_selected >= 1 && m.runs_selected <= length(m.admin_experiments)
             exp = m.admin_experiments[m.runs_selected]
-            if !ismissing(exp.status) && exp.status == :running && !ismissing(exp.id) && !isempty(exp.id)
+            if exp.status == :running && !isempty(exp.id)
                 m.confirm_mark_failed_id = exp.id
                 m.confirm_modal_selected = :cancel
             end
@@ -92,7 +92,7 @@ function _update_runs_tab!(m::ProgressDashboard, evt::KeyEvent)
 
     if m.runs_selected > 0 && m.runs_selected <= length(m.admin_experiments)
         exp = m.admin_experiments[m.runs_selected]
-        m.selected_experiment_id = ismissing(exp.id) ? "" : exp.id
+        m.selected_experiment_id = exp.id
     else
         m.selected_experiment_id = ""
     end
@@ -100,6 +100,7 @@ function _update_runs_tab!(m::ProgressDashboard, evt::KeyEvent)
     if m.selected_experiment_id != previous_id
         m.task_scroll_offset = 0
         m.running_focus = 1
+        _refresh_selected_tasks!(m)
     end
 end
 

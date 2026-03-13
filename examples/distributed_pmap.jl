@@ -1,27 +1,22 @@
-# Distributed pmap Example
-#
-# Runs tasks on multiple processes via pmap. The master is the only process that
-# touches the DB; workers send progress updates through a RemoteChannel. Each worker
-# gets a ProgressTask from get_task(manager, i, :remote) and calls update!
-# and finish! so the master's listener can write to the DB.
-#
-# Run with: julia -p 4 examples/distributed_pmap.jl
-# (Adjust worker count to your machine)
-
 using Distributed
 using MultiProgressManagers
 
-addprocs(6)
-
-# Generate unique database path (appends _2, _3, etc. if file exists)
-base_db_path = "./progresslogs/distributed_pmap.db"
-db_path = base_db_path
-counter = 2
-while isfile(db_path)
-    global db_path = replace(base_db_path, ".db" => "_$counter.db")
-    global counter += 1
+if nworkers() == 0
+    addprocs(4)
 end
 
+function unique_db_path(base_db_path::String)
+    db_path = base_db_path
+    counter = 2
+    while isfile(db_path)
+        db_path = replace(base_db_path, ".db" => "_$counter.db")
+        counter += 1
+    end
+
+    return db_path
+end
+
+@everywhere using Distributed
 @everywhere using MultiProgressManagers
 
 @everywhere function run_worker(task::ProgressTask, total_steps::Int)
@@ -48,6 +43,7 @@ end
 end
 
 function main()
+    db_path = unique_db_path("./progresslogs/distributed_pmap.db")
     println("="^60)
     println("Distributed pmap Progress Tracking Example")
     println("="^60)

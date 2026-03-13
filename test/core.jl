@@ -228,7 +228,7 @@ end
         MPM._poll_database!(dashboard)
 
         @test length(dashboard.admin_experiments) == 1
-        selected_id = ismissing(dashboard.admin_experiments[1].id) ? "" : dashboard.admin_experiments[1].id
+        selected_id = dashboard.admin_experiments[1].id
         @test !isempty(selected_id)
         @test dashboard.runs_selected == 1
         @test dashboard.selected_experiment_id == selected_id
@@ -512,6 +512,66 @@ end
             if shared_channel isa Channel{MPM.ProgressMessage} && isopen(shared_channel)
                 close(shared_channel)
             end
+        end
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "Remote ProgressTask requires Distributed extension" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("RemoteExtensionRequired", 1; db_path = test_db)
+    try
+        remote_ext = Base.get_extension(MPM, :MultiProgressManagersDistributedExt)
+        if remote_ext === nothing
+            @test_throws ArgumentError MPM.get_task(manager, 1, :remote)
+        else
+            remote_task = MPM.get_task(manager, 1, :remote)
+            @test remote_task isa MPM.ProgressTask
+        end
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "Remote ProgressTask updates" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("RemoteTaskTest", 1; db_path = test_db)
+    remote_task = nothing
+    try
+        remote_ext = Base.get_extension(MPM, :MultiProgressManagersDistributedExt)
+        if remote_ext === nothing
+            return
+        end
+        remote_task = MPM.get_task(manager, 1, :remote)
+        @test remote_task isa MPM.ProgressTask
+        @test occursin("RemoteChannel", string(typeof(remote_task.channel)))
+
+        total_steps = 4
+        for step in 1:total_steps
+            MPM.update!(
+                remote_task;
+                step = step,
+                total_steps = total_steps,
+                message = "remote $(step)",
+            )
+        end
+        MPM.finish!(remote_task)
+
+        completed_tasks = _wait_for_task_completion(manager; timeout_seconds = 15.0)
+        @test nrow(completed_tasks) == 1
+        @test String(completed_tasks[1, :status]) == "completed"
+        @test completed_tasks[1, :current_step] == total_steps
+        @test completed_tasks[1, :total_steps] == total_steps
+        @test occursin("remote", String(completed_tasks[1, :display_message]))
+
+        if manager._listener_task !== nothing
+            wait(manager._listener_task)
+        end
+    finally
+        if remote_task !== nothing && isopen(remote_task.channel)
+            close(remote_task.channel)
         end
         Database.close_db!(manager.db_handle)
         rm(test_db, force = true)

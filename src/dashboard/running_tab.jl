@@ -24,10 +24,33 @@ end
 function _find_selected_experiment(m::ProgressDashboard)::Union{ExperimentAdminView,Nothing}
     isempty(m.selected_experiment_id) && return nothing
     for exp in m.admin_experiments
-        if !ismissing(exp.id) && exp.id == m.selected_experiment_id
+        if exp.id == m.selected_experiment_id
             return exp
         end
     end
+    return nothing
+end
+
+function _render_task_placeholder!(
+    area::Rect,
+    buf::Buffer;
+    title::String = " Tasks ",
+    message::String,
+)
+    block = Block(
+        title = title,
+        border_style = tstyle(:accent),
+        title_style = tstyle(:accent, bold = true),
+    )
+    inner_area = render(block, area, buf)
+    set_string!(
+        buf,
+        inner_area.x,
+        inner_area.y + 1,
+        message,
+        tstyle(:text_dim);
+        max_x = right(inner_area),
+    )
     return nothing
 end
 
@@ -55,17 +78,17 @@ function _view_experiment_detail_panel!(m::ProgressDashboard, area::Rect, buf)
         return
     end
 
-    name = ismissing(exp.name) ? "Unknown" : exp.name
-    status = ismissing(exp.status) ? :unknown : exp.status
-    total_tasks = ismissing(exp.total_tasks) ? 0 : exp.total_tasks
-    completed_tasks = ismissing(exp.completed_tasks) ? 0 : exp.completed_tasks
-    total_steps = ismissing(exp.total_steps) ? 0 : exp.total_steps
-    current_step = ismissing(exp.current_step) ? 0 : exp.current_step
+    name = isempty(exp.name) ? "Unknown" : exp.name
+    status = exp.status
+    total_tasks = exp.total_tasks
+    completed_tasks = exp.completed_tasks
+    total_steps = exp.total_steps
+    current_step = exp.current_step
     progress_pct = total_tasks > 0 ? (completed_tasks / total_tasks) * 100 : (total_steps > 0 ? (current_step / total_steps) * 100 : 0.0)
 
     started_at = exp.started_at
-    finished_at = ismissing(exp.finished_at) ? nothing : exp.finished_at
-    duration_str = ismissing(started_at) ? "N/A" : format_duration(started_at, finished_at)
+    finished_at = exp.finished_at
+    duration_str = format_duration(started_at, finished_at)
 
     y = table_area.y + 1
     x = table_area.x
@@ -82,7 +105,7 @@ function _view_experiment_detail_panel!(m::ProgressDashboard, area::Rect, buf)
     eta_str = "N/A"
     if status == :completed
         eta_str = "Done"
-    elseif status == :running && !ismissing(started_at)
+    elseif status == :running && started_at !== nothing
         elapsed_seconds = time() - Dates.datetime2unix(started_at)
         if total_tasks > 0 && completed_tasks > 0
             avg_time_per_task = elapsed_seconds / completed_tasks
@@ -103,7 +126,7 @@ function _view_experiment_detail_panel!(m::ProgressDashboard, area::Rect, buf)
         end
     end
 
-    started_str = ismissing(started_at) ? "N/A" : format_datetime_for_started_column(started_at, true)
+    started_str = format_datetime_for_started_column(started_at, true)
 
     set_string!(buf, x, y, name, tstyle(:accent, bold = true); max_x = max_x)
     y += 1
@@ -133,44 +156,43 @@ end
 function _pane_title(pane::Int)
     tstyle(:title, bold = true)
 end
+
 function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
-    border_style = tstyle(:accent)
-    title_style = tstyle(:accent, bold = true)
-    
-    # 1. Get selected experiment ID
     exp_id = m.selected_experiment_id
     if isempty(exp_id)
-        block = Block(title = " Tasks ", border_style = border_style, title_style = title_style)
-        inner_area = render(block, area, buf)
-        set_string!(buf, inner_area.x, inner_area.y + 1, "Select an experiment to view tasks", tstyle(:text_dim))
-        return
+        return _render_task_placeholder!(
+            area,
+            buf;
+            message = "Select an experiment to view tasks",
+        )
     end
-    
+
     exp = _find_selected_experiment(m)
-    exp_name = exp === nothing ? "Selected Experiment" : (ismissing(exp.name) ? "Unknown" : exp.name)
+    exp_name = exp === nothing ? "Selected Experiment" : (isempty(exp.name) ? "Unknown" : exp.name)
 
-    handle = _handle_for_experiment(m, exp_id)
-    if handle === nothing
-        block = Block(title = " Tasks ", border_style = border_style, title_style = title_style)
-        inner_area = render(block, area, buf)
-        set_string!(buf, inner_area.x, inner_area.y + 1, "No database selected", tstyle(:text_dim))
-        return
+    tasks = m._selected_tasks
+    if !m._selected_tasks_loaded
+        return _render_task_placeholder!(
+            area,
+            buf;
+            message = "No database selected",
+        )
     end
-
-    # 2. Query tasks
-    tasks = Database.get_experiment_tasks(handle, exp_id)
     if isempty(tasks)
-        block = Block(title = " Tasks ", border_style = border_style, title_style = title_style)
-        inner_area = render(block, area, buf)
-        set_string!(buf, inner_area.x, inner_area.y + 1, "No tasks found for this experiment", tstyle(:text_dim))
-        return
+        return _render_task_placeholder!(
+            area,
+            buf;
+            message = "No tasks found for this experiment",
+        )
     end
-    
-    # 3. Render block
-    block = Block(title = " Tasks for $(exp_name) ", border_style = border_style, title_style = title_style)
+
+    block = Block(
+        title = " Tasks for $(exp_name) ",
+        border_style = tstyle(:accent),
+        title_style = tstyle(:accent, bold = true),
+    )
     inner_area = render(block, area, buf)
-    
-    # 4. Header and column layout (Msg/Desc split: 50% + delta, min widths)
+
     header_y = inner_area.y
     header_style = tstyle(:text_dim, bold = true)
 
@@ -189,7 +211,6 @@ function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
         remaining - min_desc_width,
     )
     col_description = col_message + msg_width
-    # Normalize stored delta to effective value so key-repeat does not "dig a hole"
     m.task_list_msg_delta = msg_width - base_msg_width
 
     desc_width = remaining - msg_width
@@ -204,60 +225,48 @@ function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
     set_string!(buf, col_description, header_y, desc_header, header_style)
     y = header_y + 1
     max_y = bottom(inner_area)
-    
-    # 5. List items
+
     num_visible = max_y - y
     if num_visible <= 0
         return
     end
-    
-    # Clamp scroll offset
-    num_tasks = nrow(tasks)
-    if m.task_scroll_offset > num_tasks - num_visible
-        m.task_scroll_offset = max(0, num_tasks - num_visible)
-    end
-    
-    start_idx = m.task_scroll_offset + 1
+
+    num_tasks = length(tasks)
+    scroll_offset = min(m.task_scroll_offset, max(0, num_tasks - num_visible))
+    start_idx = scroll_offset + 1
     end_idx = min(start_idx + num_visible - 1, num_tasks)
-    
+
     for i in start_idx:end_idx
-        row = tasks[i, :]
-        task_num = ismissing(row.task_number) ? i : row.task_number
-        total = ismissing(row.total_steps) ? 0 : row.total_steps
-        current = ismissing(row.current_step) ? 0 : row.current_step
-        status = ismissing(row.status) ? "unknown" : row.status
-        started_at = ismissing(row.started_at) ? 0.0 : row.started_at
-        last_updated = ismissing(row.last_updated) ? 0.0 : row.last_updated
-        
-        # Speed calculation
+        task = tasks[i]
+        task_num = task.task_number
+        total = task.total_steps
+        current = task.current_step
+        status = task.status
+        started_at = task.started_at
+        last_updated = task.last_updated
         elapsed = last_updated - started_at
         speed = elapsed > 0 ? current / elapsed : 0.0
-        # Progress %
         pct = total > 0 ? current / total : 0.0
-        # Style
-        style = @match Symbol(status) begin
+        style = @match status begin
             :running => tstyle(:warning)
             :completed => tstyle(:success)
             :failed => tstyle(:error)
             _ => tstyle(:text)
         end
-        # Render row
+
         set_string!(buf, col_num, y, @sprintf("#%03d", task_num), style)
-        # Progress bar (gauge)
         gauge_width = 20
         gauge_area = Rect(col_progress, y, gauge_width, 1)
         gauge = Gauge(pct; label = "")
         render(gauge, gauge_area, buf)
         set_string!(buf, col_speed, y, format_speed(speed), tstyle(:text))
-        set_string!(buf, col_status, y, status, style)
-        # Display message (epochs, stage, etc.) — left of Desc
-        msg = hasproperty(row, :display_message) ? row[:display_message] : missing
-        msg_str = (msg === missing || ismissing(msg) || isempty(string(msg))) ? "" : string(msg)
+        set_string!(buf, col_status, y, String(status), style)
+
+        msg_str = task.display_message
         msg_style = isempty(msg_str) ? tstyle(:text_dim) : tstyle(:text)
         set_string!(buf, col_message, y, msg_str, msg_style; max_x = col_description - 1)
-        # Description (static metadata)
-        desc = hasproperty(row, :description) ? row[:description] : missing
-        desc_str = (desc === missing || ismissing(desc) || isempty(string(desc))) ? "" : string(desc)
+
+        desc_str = task.description
         desc_style = isempty(desc_str) ? tstyle(:text_dim) : tstyle(:text)
         set_string!(buf, col_description, y, desc_str, desc_style; max_x = right(inner_area))
         y += 1

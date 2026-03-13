@@ -124,35 +124,26 @@ Template for a multi-task experiment:
 ```julia
 using MultiProgressManagers
 
-# Create an experiment with N tasks
 manager = ProgressManager(
-    "My Experiment",      # Name shown in dashboard
-    5;                    # Number of parallel tasks
+    "My Experiment",
+    5;
     description = "Optional longer description",
-    db_path = "./progresslogs/my_exp.db"
+    db_path = "./progresslogs/my_exp.db",
 )
 
-# Update progress for each task (with total_steps for accurate %)
 for task_num in 1:5
     total_steps = 100
     for step in 1:total_steps
         do_work(task_num, step)
-        update!(manager, task_num, step; total_steps=total_steps)
+        update!(manager, task_num; step = step, total_steps = total_steps)
     end
-    finish_task!(manager, task_num)
-end
-for task_num in 1:5
-    for step in 1:100
-        do_work(task_num, step)
-        update!(manager, task_num, step)
-    end
-    finish_task!(manager, task_num)
+    finish!(manager, task_num)
 end
 
-# Mark entire experiment as complete
-finish_experiment!(manager)
+finish!(manager)
 
-# View with: mpm ./progresslogs/my_exp.db
+# View with: mpm ./progresslogs/my_exp.db or
+# using MultiProgressManagers; view_dashboard("./progresslogs/my_exp.db")
 ```
 
 ### API Reference
@@ -166,23 +157,29 @@ ProgressManager(name::String, total_tasks::Int;
 
 **Updating Task Progress**
 ```julia
-update!(manager::ProgressManager, task_number::Int, current_step::Int;
-        total_steps::Union{Int,Nothing} = nothing)
+update!(
+    manager::ProgressManager,
+    task_number::Int;
+    step::Int,
+    total_steps::Union{Int,Nothing} = nothing,
+    message::String = "",
+)
 ```
 
-- `total_steps`: Total expected steps for this task. Set it once, then omit it on later updates if it has not changed.
+- `total_steps`: Set it once, then omit it on later updates if it has not changed.
+- `message`: Optional live status text shown in the dashboard.
 ```julia
-update!(manager::ProgressManager, task_number::Int, current_step::Int)
+update!(manager, task_number; step = current_step)
 ```
 
 **Finishing a Task**
 ```julia
-finish_task!(manager::ProgressManager, task_number::Int)
+finish!(manager::ProgressManager, task_number::Int)
 ```
 
 **Finishing an Experiment**
 ```julia
-finish_experiment!(manager::ProgressManager)
+finish!(manager::ProgressManager; message::String = "Completed successfully")
 ```
 
 ## Tips
