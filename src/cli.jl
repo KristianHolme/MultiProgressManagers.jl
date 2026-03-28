@@ -26,14 +26,6 @@ function _help_text()
     """
 end
 
-function _db_files_in_directory(path::String)
-    db_files = filter(readdir(path; join = true)) do entry
-        return endswith(lowercase(entry), ".db")
-    end
-    sort!(db_files)
-    return db_files
-end
-
 function _resolve_dashboard_path(path::String)
     if path == "."
         path = abspath(".")
@@ -44,11 +36,6 @@ function _resolve_dashboard_path(path::String)
     end
 
     if isdir(path)
-        db_files = _db_files_in_directory(path)
-        if isempty(db_files)
-            println("Error: No .db files found in directory: $path")
-            return nothing
-        end
         return path
     end
 
