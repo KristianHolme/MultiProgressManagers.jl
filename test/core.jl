@@ -327,6 +327,27 @@ end
     end
 end
 
+@testset "Empty log directory does not error" begin
+    folder = mktempdir()
+    try
+        @test MPM.CLI._resolve_dashboard_path(folder) == folder
+
+        dashboard = MPM.ProgressDashboard(
+            db_path = folder,
+            db_handles = Dict{String,Database.DBHandle}(),
+            folder_mode = true,
+            folder_path = folder,
+            available_dbs = String[],
+            poll_frequency_ms = 0,
+        )
+        MPM._poll_database!(dashboard)
+        @test isempty(dashboard.admin_experiments)
+        @test isempty(dashboard.running_experiments)
+    finally
+        rm(folder; force = true, recursive = true)
+    end
+end
+
 @testset "Stress: rapid multithreaded ProgressTask updates" begin
     test_db = tempname() * ".db"
     total_tasks = max(4, min(16, Base.Threads.nthreads() * 4))

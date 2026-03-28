@@ -362,7 +362,7 @@ end
 Launch a Tachikoma dashboard for viewing experiment progress.
 
 # Arguments
-- `db_path::String`: Path to experiment database file, or folder containing .db files
+- `db_path::String`: Path to experiment database file, or folder to watch for `.db` files (empty folders are allowed)
 - `poll_frequency_ms::Int=500`: How often to poll database for updates (lower = more frequent)
 - `speed_window_seconds::Real=30`: Time window for short-horizon speed calculation
 - `folder_discovery_interval_ms::Int=5000`: In folder mode, how often to re-scan for new .db files
@@ -381,12 +381,8 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
     folder_mode = isdir(db_path)
     
     if folder_mode
-        # Find all .db files in folder
+        # Find all .db files in folder (may be empty; new files are picked up on refresh)
         available_dbs = _discover_db_files(db_path)
-
-        if isempty(available_dbs)
-            error("No .db files found in folder: $db_path")
-        end
 
         active_tab = 1
     else
