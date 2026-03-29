@@ -97,19 +97,17 @@ See `examples/multithreading.jl` (threads + `ProgressTask` via `get_task(..., :l
 
 ### Drill.jl training callbacks
 
-`create_drill_callback` is exported from `MultiProgressManagers`, so you do not need `Base.get_extension` to discover it. Add Drill.jl to your environment, load it with `using Drill` (this activates the package extension), then build a callback from a remote progress task:
+Add Drill.jl to your environment, load it with `using Drill`, then build a training callback from a progress task (often a `:remote` task for distributed workers):
 
 ```julia
 using MultiProgressManagers
 using Drill
-using Distributed  # if workers use :remote tasks
+using Distributed  # when using :remote tasks
 
 manager = ProgressManager("my_study", n; db_path = default_db_path("my_study"))
 task = get_task(manager, worker_index, :remote)
 callback = create_drill_callback(task)
 ```
-
-If Drill is not loaded, calling `create_drill_callback` raises `ArgumentError` after a warning.
 
 ### Viewing the Dashboard
 
@@ -211,7 +209,7 @@ Workers call `update!` during the loop and `finish!(task)` when the task is done
 create_drill_callback(task::ProgressTask)
 ```
 
-Returns a Drill callback that reports training progress through `task`. Requires Drill.jl: run `using Drill` before calling so the extension loads. Exported from the main module as `create_drill_callback`.
+Returns a Drill callback that reports training progress through `task`. Load Drill.jl first with `using Drill`.
 
 ### Finishing a Task (in-process)
 

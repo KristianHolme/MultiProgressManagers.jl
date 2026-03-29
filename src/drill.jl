@@ -1,14 +1,12 @@
-# Drill.jl integration: stub API in the base module; implementation in MultiProgressManagersDrillExt.
+# Drill.jl integration: entry point in the base module; Drill types live in MultiProgressManagersDrillExt.
 
 """
     create_drill_callback(task::ProgressTask)
 
 Return a Drill training callback that forwards progress for `task` to the experiment database.
 
-Requires the Drill.jl package: load it with `using Drill` (or add it to your environment) so the
-package extension is active, then call this function.
-
-See also: [`get_task`](@ref) with `type = :remote` for distributed workers.
+Load Drill.jl with `using Drill`, then call this function. For distributed training, obtain `task`
+with [`get_task`](@ref) and `type = :remote` (and load `Distributed` as usual).
 """
 function create_drill_callback(task::ProgressTask)
     drill_ext = Base.get_extension(MultiProgressManagers, :MultiProgressManagersDrillExt)
