@@ -661,3 +661,21 @@ end
         rm(test_db, force = true)
     end
 end
+
+@testset "create_drill_callback requires Drill extension" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("DrillExtRequired", 1; db_path = test_db)
+    try
+        local_task = MPM.get_task(manager, 1, :local)
+        drill_ext = Base.get_extension(MPM, :MultiProgressManagersDrillExt)
+        if drill_ext === nothing
+            @test_throws ArgumentError MPM.create_drill_callback(local_task)
+        else
+            cb = MPM.create_drill_callback(local_task)
+            @test cb isa drill_ext.DrillWorkerProgressCallback
+        end
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end

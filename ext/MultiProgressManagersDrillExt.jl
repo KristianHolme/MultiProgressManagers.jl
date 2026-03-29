@@ -3,7 +3,7 @@ module MultiProgressManagersDrillExt
 using MultiProgressManagers
 import Drill
 
-export DrillWorkerProgressCallback, create_drill_callback
+export DrillWorkerProgressCallback
 
 mutable struct DrillWorkerProgressCallback{T<:ProgressTask} <: Drill.AbstractCallback
     task::T
@@ -40,28 +40,9 @@ function Drill.on_training_end(callback::DrillWorkerProgressCallback, locals::Di
     return true
 end
 
-"""
-    create_drill_callback(task)
-
-Create a Drill callback for progress tracking.
-
-# Arguments
-- `task::ProgressTask`: The progress task from `get_task(manager, task_number, :remote)`
-
-# Returns
-- `DrillWorkerProgressCallback`: Callback instance for use with Drill training
-
-# Example
-```julia
-using MultiProgressManagers
-using Drill
-manager = ProgressManager("my_study", 10; db_path = default_db_path("my_study"))
-task = get_task(manager, 1, :remote)
-callback = create_drill_callback(task)
-```
-"""
-function create_drill_callback(task::ProgressTask)
-    return DrillWorkerProgressCallback(task, 0, nothing)
+function _create_drill_callback_impl(task::ProgressTask)
+    cb = DrillWorkerProgressCallback(task, 0, nothing)
+    return cb
 end
 
 end # module MultiProgressManagersDrillExt

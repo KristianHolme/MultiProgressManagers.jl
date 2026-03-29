@@ -15,6 +15,7 @@ include("dashboard/update.jl")
 include("dashboard/runs_tab.jl")
 include("dashboard/running_tab.jl")
 include("cli.jl")
+include("drill.jl")
 
 # Re-export from Database
 export Database
@@ -26,5 +27,6 @@ export ProgressManager, TaskStatus, ProgressTask, ProgressUpdate, TaskFinished, 
 export update!, finish!, fail!
 export get_task
 export view_dashboard, default_db_path
+export create_drill_callback
 
 end # module
