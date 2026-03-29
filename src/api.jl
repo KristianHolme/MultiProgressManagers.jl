@@ -283,10 +283,7 @@ function _default_db_directory()
 end
 
 function _experiment_db_basename(name::String)
-    slug = lowercase(strip(name))
-    slug = replace(slug, r"[^a-z0-9]+" => "_")
-    slug = strip(slug, '_')
-
+    slug = Database.experiment_name_slug(name)
     if isempty(slug)
         return "experiment.db"
     end

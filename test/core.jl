@@ -69,6 +69,29 @@ end
     end
 end
 
+@testset "Experiment id: derived from sanitized name" begin
+    test_db = tempname() * ".db"
+    handle = Database.init_db!(test_db)
+    try
+        id = Database.create_experiment(handle, "My  Run!", 1)
+        @test id == "my_run"
+        id2 = Database.create_experiment(handle, "My  Run!", 1)
+        @test id2 == id
+    finally
+        Database.close_db!(handle)
+        rm(test_db, force = true)
+    end
+    empty_slug_db = tempname() * ".db"
+    handle2 = Database.init_db!(empty_slug_db)
+    try
+        id3 = Database.create_experiment(handle2, " @@@ ", 1)
+        @test id3 == "experiment"
+    finally
+        Database.close_db!(handle2)
+        rm(empty_slug_db, force = true)
+    end
+end
+
 @testset "Task description: create_task and create_experiment" begin
     test_db = tempname() * ".db"
     handle = Database.init_db!(test_db)

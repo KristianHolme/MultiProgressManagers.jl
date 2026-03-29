@@ -291,6 +291,44 @@ function _existing_experiment_name(handle::DBHandle)
 end
 
 """
+    experiment_name_slug(name::String) -> String
+
+Normalize a human-readable experiment name for use in stable identifiers (e.g. experiment primary keys,
+default database filenames). Lowercases, strips edges, maps each run of non-alphanumeric characters to
+a single underscore, and strips outer underscores. Returns `""` if nothing remains (caller may substitute
+`"experiment"`).
+"""
+function experiment_name_slug(name::String)::String
+    slug = lowercase(strip(name))
+    slug = replace(slug, r"[^a-z0-9]+" => "_")
+    slug = strip(slug, '_')
+    return slug
+end
+
+function _experiment_id_taken(db::SQLite.DB, id::String)::Bool
+    row = _execute_first_row(
+        db,
+        "SELECT 1 AS x FROM experiments WHERE id = ? LIMIT 1",
+        [id],
+    )
+    return row !== nothing
+end
+
+function _allocate_experiment_id(db::SQLite.DB, name::String)::String
+    base = experiment_name_slug(name)
+    if isempty(base)
+        base = "experiment"
+    end
+    candidate = base
+    suffix = 0
+    while _experiment_id_taken(db, candidate)
+        suffix += 1
+        candidate = base * "_" * string(suffix)
+    end
+    return candidate
+end
+
+"""
     create_experiment(handle::DBHandle, name::String, total_tasks::Int;
                       description::String="", task_descriptions::Union{Vector{String},Nothing}=nothing) -> String
 
@@ -326,7 +364,7 @@ function create_experiment(handle::DBHandle, name::String, total_tasks::Int;
         return existing_experiment.id
     end
 
-    experiment_id = string(UUIDs.uuid4())
+    experiment_id = _allocate_experiment_id(db, name)
     started_at = _current_timestamp()
 
     with_retry() do
