@@ -95,6 +95,22 @@ finish!(manager)
 
 See `examples/multithreading.jl` (threads + `ProgressTask` via `get_task(..., :local)`) and `examples/distributed_pmap.jl` (Distributed + `ProgressTask` via `get_task(..., :remote)`).
 
+### Drill.jl training callbacks
+
+`create_drill_callback` is exported from `MultiProgressManagers`, so you do not need `Base.get_extension` to discover it. Add Drill.jl to your environment, load it with `using Drill` (this activates the package extension), then build a callback from a remote progress task:
+
+```julia
+using MultiProgressManagers
+using Drill
+using Distributed  # if workers use :remote tasks
+
+manager = ProgressManager("my_study", n; db_path = default_db_path("my_study"))
+task = get_task(manager, worker_index, :remote)
+callback = create_drill_callback(task)
+```
+
+If Drill is not loaded, calling `create_drill_callback` raises `ArgumentError` after a warning.
+
 ### Viewing the Dashboard
 
 From the shell: `mpm ./progresslogs/experiment1.db` (requires the app; see Installation).  
@@ -188,6 +204,14 @@ fail!(task::ProgressTask; message::String = "Task failed")
 ```
 
 Workers call `update!` during the loop and `finish!(task)` when the task is done. A listener on the master process applies these to the DB. As with manager-side `update!`, `total_steps` only needs to be supplied when it changes or is first established.
+
+### Drill training integration
+
+```julia
+create_drill_callback(task::ProgressTask)
+```
+
+Returns a Drill callback that reports training progress through `task`. Requires Drill.jl: run `using Drill` before calling so the extension loads. Exported from the main module as `create_drill_callback`.
 
 ### Finishing a Task (in-process)
 
