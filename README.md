@@ -1,16 +1,17 @@
 # MultiProgressManagers.jl
 
-A lightweight progress tracking system for Julia with a Tachikoma.jl-based dashboard and SQLite persistence.
+A lightweight progress tracking system for parallel tasks. Implemented in pure Julia with a [Tachikoma.jl](https://github.com/kahliburke/Tachikoma.jl)-based dashboard and SQLite persistence.
 
 ## Features
 
 - **📊 Tachikoma Dashboard**: Clean 2-tab terminal UI for monitoring experiments
 - **💾 SQLite Persistence**: Current state stored in SQLite
 - **🔄 Multi-Task Support**: Track parallel sub-tasks within a single experiment
-- **⚡ Simple API**: In-process: `update!`, `finish!`, `fail!`. Workers: `ProgressTask` + `update!`, `finish!`, `fail!`
+- **⚡ Simple API**: `update!`, `finish!`, `fail!`
 - **🔀 Distributed & Threads**: Single DB writer on the master; workers get a `ProgressTask` via `get_task(manager, id, :remote)` or `:local` and send updates over a channel
 
 ## Demo
+
 ![recording_small](https://github.com/user-attachments/assets/e754d071-adb2-499a-b198-bebeb82c1585)
 
 ## Installation
@@ -40,15 +41,22 @@ You can also open the dashboard from Julia without the app: `view_dashboard(db_p
 using MultiProgressManagers
 
 # Create a multi-task experiment with 5 parallel tasks
-manager = ProgressManager("Training Run", 5;
-                         description = "Epoch 1-10 of ResNet training",
-                         db_path = "./progresslogs/experiment1.db")
+N_tasks = 5
+parameter_values = rand(N)
+manager = ProgressManager(
+    "Training Run", N;
+    description = "Epoch 1-10 of ResNet training",
+    db_path = "./progresslogs/experiment1.db",
+    task_description = ["parameter=$(val)" for val in parameter_values],
+)
 
 # Update progress for each task as it runs
-for task_num in 1:5
-    for step in 1:100
-        do_work(task_num, step)
-        update!(manager, task_num; step = step, total_steps = 100, message = "step $step")
+for (task_num, param_val) in enumerate(parameter_values)
+    steps = rand([100, 200, 300])
+    update!(manager;total_steps = steps, message="Starting run with $steps steps")
+    for step in 1:steps
+        do_work(task_num, param_val, step)
+        update!(manager, task_num; step = step, message = "step $step")
     end
     finish!(manager, task_num)
 end
@@ -138,13 +146,15 @@ ProgressManager(name::String, num_tasks::Int;
 ### Updating Task Progress (in-process)
 
 ```julia
-update!(manager::ProgressManager, task_number::Int;
-        step::Int,
-        total_steps::Union{Int,Nothing} = nothing,
-        message::String = "")
+update!(
+    manager::ProgressManager, task_number::Int;
+    step::Union{Int, Nothing} = nothing,
+    total_steps::Union{Int,Nothing} = nothing,
+    message::String = ""
+)
 ```
 
-Records progress for a specific task. Optionally pass `total_steps` and `message`; the message is shown in the dashboard Details tab. When `total_steps` is omitted, the previously stored total is reused.
+Records progress for a specific task. Report progress by supplying `step`, Update total steps for the task by using `total_steps`. Update the current task message using `message`. The message is shown in the dashboard Details tab. When `total_steps` is omitted, the previously stored total is reused. Its recommended to update `total_steps` at the beginning of a task. If `total_steps` is not supplied, it is updated automatically as `step` is updated.
 
 **Parameters:**
 
@@ -164,14 +174,15 @@ get_task(manager::ProgressManager, task_number::Int, type = :local) -> ProgressT
 
 Returns a handle for one task. `type`:
 
-- `:local` — plain `Channel` (same process, e.g. `@spawn`)
+- `:local` — plain `Channel` (same process,e.g. `@spawn` or `@threads`)
 - `:remote` — `RemoteChannel` (for `Distributed` / `pmap`)
 
 ```julia
 update!(task::ProgressTask;
-        step::Int,
-        total_steps::Union{Int,Nothing} = nothing,
-        message::String = "")
+    step::Union{Int,Nothing} = nothing
+    total_steps::Union{Int,Nothing} = nothing,
+    message::String = ""
+)
 finish!(task::ProgressTask)
 fail!(task::ProgressTask; message::String = "Task failed")
 ```
@@ -184,7 +195,7 @@ Workers call `update!` during the loop and `finish!(task)` when the task is done
 finish!(manager::ProgressManager, task_number::Int)
 ```
 
-Explicitly mark a task as completed. Use this when you call `update!` from the same process. For workers, use `finish!(task)` on the `ProgressTask` instead.
+Explicitly mark a task as completed. When doing multithreaded or distributed tasks, use `finish!(task)` on the `ProgressTask` instead.
 
 ### Finishing an Experiment
 
@@ -237,7 +248,7 @@ Mark either a specific task or the entire experiment as failed with a message. T
 
 ### Database Location
 
-If you omit `db_path`, the package stores the experiment under the default progress-log directory using a filename derived from the experiment name. Because each experiment now gets its own DB file, duplicate names at the default path are rejected; pass an explicit `db_path` if you want to reopen an existing experiment file.
+If you omit `db_path`, the package stores the experiment under the default progress-log directory using a filename derived from the experiment name. Because each experiment gets its own DB file, duplicate names at the default path are rejected; pass an explicit `db_path` if you want to reopen an existing experiment file.
 
 ```julia
 # Example: Create database in specific directory
