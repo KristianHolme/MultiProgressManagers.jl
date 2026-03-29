@@ -104,8 +104,10 @@ using MultiProgressManagers
 using Drill
 using Distributed  # when using :remote tasks
 
-manager = ProgressManager("my_study", n; db_path = default_db_path("my_study"))
-task = get_task(manager, worker_index, :remote)
+num_parallel_tasks = 8
+manager = ProgressManager("my_study", num_parallel_tasks; db_path = default_db_path("my_study"))
+task_index = 1
+task = get_task(manager, task_index, :remote)
 callback = create_drill_callback(task)
 ```
 
