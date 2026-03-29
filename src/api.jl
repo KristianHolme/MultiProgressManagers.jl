@@ -110,18 +110,18 @@ end
 function _validate_task_update!(
         ts::TaskStatus,
         task_number::Int,
-        step::Int,
+        step::Union{Int, Nothing},
         total_steps::Union{Int, Nothing},
     )
-    if step !== nothing && step < 0
+    if step isa Int && step < 0
         throw(ArgumentError("step must be nonnegative for task $(task_number), got $(step)"))
     end
 
-    if total_steps !== nothing && total_steps < 0
+    if total_steps isa Int && total_steps < 0
         throw(ArgumentError("total_steps must be nonnegative for task $(task_number), got $(total_steps)"))
     end
 
-    if step !== nothing && step < ts.current_step
+    if step isa Int && step < ts.current_step
         throw(
             ArgumentError(
                 "step must be monotonic for task $(task_number): previous=$(ts.current_step), new=$(step)",
@@ -132,20 +132,20 @@ function _validate_task_update!(
     return nothing
 end
 
-function new_total_steps(task_status, new_current_step::Int, total_steps::Int)
-    return max(current_step, total_steps)
+function _merged_total_steps(ts::TaskStatus, new_current_step::Int, total_steps::Int)
+    return max(new_current_step, total_steps)
 end
 
-function new_total_steps(task_status, new_current_step::Int, total_steps::Nothing)
-    return max(train_status.total_steps, new_current_step)
+function _merged_total_steps(ts::TaskStatus, new_current_step::Int, total_steps::Nothing)
+    return max(ts.total_steps, new_current_step)
 end
 
-function new_current_step(task_status, step::Int)
+function _merged_current_step(ts::TaskStatus, step::Int)
     return step
 end
 
-function new_current_step(task_status, step::Nothing)
-    return task_status.current_step
+function _merged_current_step(ts::TaskStatus, step::Nothing)
+    return ts.current_step
 end
 
 """Update progress for a specific task within a multi-task experiment."""
@@ -158,10 +158,10 @@ function update!(
     )
     ts = manager.task_status[task_number]
     _validate_task_update!(ts, task_number, step, total_steps)
-    new_step = new_current_step(ts, step)
-    new_total_steps = new_total_steps(ts, new_step, total_steps)
+    new_step = _merged_current_step(ts, step)
+    merged_total_steps = _merged_total_steps(ts, new_step, total_steps)
     new_status = ts.status == :completed ? :completed : :running
-    db_total_steps = total_steps === nothing ? nothing : new_total_steps
+    db_total_steps = total_steps === nothing ? nothing : merged_total_steps
     Database.update_task!(
         manager.db_handle,
         ts.task_id,
@@ -172,7 +172,7 @@ function update!(
     )
     manager.task_status[task_number] = _updated_task_status(
         ts;
-        total_steps = new_total_steps,
+        total_steps = merged_total_steps,
         current_step = new_step,
         status = new_status,
     )
