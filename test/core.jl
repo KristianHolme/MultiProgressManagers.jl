@@ -430,6 +430,69 @@ end
     end
 end
 
+@testset "update! without step: message-only, total_steps-only, and ProgressTask" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("NoStepUpdate", 1; db_path = test_db)
+    try
+        MPM.update!(manager, 1; step = 3, total_steps = 10, message = "training")
+        MPM.update!(manager, 1; message = "heartbeat")
+
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        row = tasks[1, :]
+        @test row.current_step == 3
+        @test row.total_steps == 10
+        @test coalesce(get(row, :display_message, missing), "") == "heartbeat"
+        @test manager.task_status[1].current_step == 3
+        @test manager.task_status[1].total_steps == 10
+
+        MPM.update!(manager, 1; total_steps = 12, message = "extended budget")
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        row = tasks[1, :]
+        @test row.current_step == 3
+        @test row.total_steps == 12
+        @test coalesce(get(row, :display_message, missing), "") == "extended budget"
+        @test manager.task_status[1].total_steps == 12
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+
+    test_db_ch = tempname() * ".db"
+    manager_ch = MPM.ProgressManager("NoStepChannel", 1; db_path = test_db_ch)
+    task = MPM.get_task(manager_ch, 1, :local)
+    try
+        MPM.update!(task; step = 2, total_steps = 6, message = "from worker")
+        MPM.update!(task; message = "worker heartbeat")
+        MPM.finish!(task)
+
+        deadline = time() + 10.0
+        row_ok = false
+        while time() < deadline
+            tasks = Database.get_experiment_tasks(manager_ch.db_handle, manager_ch.experiment_id)
+            row = tasks[1, :]
+            if row.current_step == 6 &&
+                row.total_steps == 6 &&
+                coalesce(get(row, :display_message, missing), "") == "worker heartbeat" &&
+                String(row.status) == "completed"
+                row_ok = true
+                break
+            end
+            sleep(0.01)
+        end
+        @test row_ok
+
+        if manager_ch._listener_task !== nothing
+            wait(manager_ch._listener_task)
+        end
+    finally
+        if isopen(task.channel)
+            close(task.channel)
+        end
+        Database.close_db!(manager_ch.db_handle)
+        rm(test_db_ch, force = true)
+    end
+end
+
 @testset "update! validates monotonic and nonnegative inputs" begin
     test_db = tempname() * ".db"
     manager = MPM.ProgressManager("ValidationTest", 1; db_path = test_db)
