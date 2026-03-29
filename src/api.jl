@@ -113,7 +113,7 @@ function _validate_task_update!(
         step::Int,
         total_steps::Union{Int, Nothing},
     )
-    if step < 0
+    if step !== nothing && step < 0
         throw(ArgumentError("step must be nonnegative for task $(task_number), got $(step)"))
     end
 
@@ -121,7 +121,7 @@ function _validate_task_update!(
         throw(ArgumentError("total_steps must be nonnegative for task $(task_number), got $(total_steps)"))
     end
 
-    if step < ts.current_step
+    if step !== nothing && step < ts.current_step
         throw(
             ArgumentError(
                 "step must be monotonic for task $(task_number): previous=$(ts.current_step), new=$(step)",
@@ -132,22 +132,34 @@ function _validate_task_update!(
     return nothing
 end
 
+function new_total_steps(task_status, new_current_step::Int, total_steps::Int)
+    return max(current_step, total_steps)
+end
+
+function new_total_steps(task_status, new_current_step::Int, total_steps::Nothing)
+    return max(train_status.total_steps, new_current_step)
+end
+
+function new_current_step(task_status, step::Int)
+    return step
+end
+
+function new_current_step(task_status, step::Nothing)
+    return task_status.current_step
+end
+
 """Update progress for a specific task within a multi-task experiment."""
 function update!(
         manager::ProgressManager,
         task_number::Int;
-        step::Int,
+        step::Union{Int, Nothing} = nothing,
         total_steps::Union{Int, Nothing} = nothing,
         message::String = "",
     )
     ts = manager.task_status[task_number]
     _validate_task_update!(ts, task_number, step, total_steps)
-    new_total_steps = if total_steps === nothing
-        ts.total_steps
-    else
-        max(total_steps, step)
-    end
-    new_step = new_total_steps > 0 ? min(step, new_total_steps) : step
+    new_step = new_current_step(ts, step)
+    new_total_steps = new_total_steps(ts, new_step, total_steps)
     new_status = ts.status == :completed ? :completed : :running
     db_total_steps = total_steps === nothing ? nothing : new_total_steps
     Database.update_task!(
@@ -167,15 +179,6 @@ function update!(
     return nothing
 end
 
-"""Update progress for the first task in a single-task workflow."""
-function update!(
-        manager::ProgressManager;
-        step::Int,
-        total_steps::Union{Int, Nothing} = nothing,
-        message::String = "",
-    )
-    return update!(manager, 1; step = step, total_steps = total_steps, message = message)
-end
 
 """Mark a specific task as completed."""
 function finish!(manager::ProgressManager, task_number::Int)

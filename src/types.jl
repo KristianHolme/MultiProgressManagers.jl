@@ -9,8 +9,8 @@ end
 """Message sent over the progress channel for a step update."""
 struct ProgressUpdate
     task_number::Int
-    current_step::Int
-    total_steps::Union{Int,Nothing}
+    current_step::Union{Int, Nothing}
+    total_steps::Union{Int, Nothing}
     message::String
 end
 
@@ -41,9 +41,9 @@ mutable struct ProgressManager
     start_time::Float64
     task_status::Dict{Int, TaskStatus}
     db_handle::Database.DBHandle
-    _local_channel::Union{LocalProgressChannel,Nothing}
-    _sink::Union{LocalProgressChannel,Nothing}
-    _listener_task::Union{Task,Nothing}
+    _local_channel::Union{LocalProgressChannel, Nothing}
+    _sink::Union{LocalProgressChannel, Nothing}
+    _listener_task::Union{Task, Nothing}
     _pump_tasks::Vector{Task}
     _channel_lock::Base.Threads.ReentrantLock
 end

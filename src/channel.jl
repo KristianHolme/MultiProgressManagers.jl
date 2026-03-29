@@ -112,7 +112,7 @@ function get_task(manager::ProgressManager, task_number::Int, type::Symbol = :lo
         throw(
             ArgumentError(
                 "Remote progress tasks require loading the Distributed extension. " *
-                "Load `Distributed` before requesting `get_task(manager, task_number, :remote)`.",
+                    "Load `Distributed` before requesting `get_task(manager, task_number, :remote)`.",
             ),
         )
     end
@@ -128,11 +128,11 @@ end
 Send a progress update for this task. The master's listener will call `update!` on the DB.
 """
 function update!(
-    task::ProgressTask{C};
-    step::Int,
-    total_steps::Union{Int,Nothing} = nothing,
-    message::String = "",
-) where {C}
+        task::ProgressTask{C};
+        step::Union{Int, Nothing} = nothing,
+        total_steps::Union{Int, Nothing} = nothing,
+        message::String = "",
+    ) where {C}
     msg = ProgressUpdate(task.task_number, step, total_steps, message)
     put!(task.channel, msg)
     return nothing
@@ -159,10 +159,10 @@ function fail!(task::ProgressTask{C}; message::String = "Task failed") where {C}
 end
 
 function fail!(
-    task::ProgressTask{C},
-    error::Exception;
-    message::Union{String,Nothing} = nothing,
-) where {C}
+        task::ProgressTask{C},
+        error::Exception;
+        message::Union{String, Nothing} = nothing,
+    ) where {C}
     resolved_message = message === nothing ? sprint(showerror, error) : message
     fail!(task; message = resolved_message)
     return nothing
