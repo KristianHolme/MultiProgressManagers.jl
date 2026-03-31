@@ -7,8 +7,7 @@ function _help_text()
     mpm - MultiProgressManager Dashboard
 
     Usage:
-      mpm <database_file.db>     View single experiment database
-      mpm <folder_path>          View folder of experiment databases
+      mpm <path>                 View all .db files in the directory (if a file is given, its parent folder is used)
       mpm .                      View current directory (list .db files here)
       mpm --help                 Show this help message
 
@@ -27,16 +26,14 @@ function _help_text()
 end
 
 function _resolve_dashboard_path(path::String)
-    if path == "."
-        path = abspath(".")
+    resolved = path == "." ? abspath(".") : abspath(path)
+
+    if isfile(resolved)
+        return dirname(resolved)
     end
 
-    if isfile(path)
-        return path
-    end
-
-    if isdir(path)
-        return path
+    if isdir(resolved)
+        return resolved
     end
 
     println("Error: Path not found: $path")

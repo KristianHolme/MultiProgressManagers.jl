@@ -113,8 +113,8 @@ callback = create_drill_callback(task)
 
 ### Viewing the Dashboard
 
-From the shell: `mpm ./progresslogs/experiment1.db` (requires the app; see Installation).  
-From Julia: `using MultiProgressManagers; view_dashboard("./progresslogs/experiment1.db")`.
+From the shell: `mpm ./progresslogs/experiment1.db` loads every `.db` in that file’s directory (requires the app; see Installation).  
+From Julia: `using MultiProgressManagers; view_dashboard("./progresslogs/experiment1.db")` does the same.
 
 ## Dashboard Tabs
 

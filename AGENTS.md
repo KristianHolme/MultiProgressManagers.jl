@@ -398,7 +398,7 @@ When working on this codebase, focus on:
 - Uses SQLite.jl with WAL mode
 - All database fields can be Missing - handle with ismissing()
 - Dashboard polls database at configurable frequency (default 500ms)
-- Supports both single-file and folder modes
+- Dashboard always uses folder mode (a file path uses the directory containing that file)
 - **Single DB writer:** Only the process that owns the ProgressManager writes to the DB; workers use `ProgressTask` + `update!` / `finish!` / `fail!` and a channel-backed listener.
 - **JET-friendly patterns:** Union{Nothing, T} is handled via multiple dispatch (e.g. _get_db(::Nothing, path) vs _get_db(db::SQLite.DB, path), _current_slot(::Nothing, ...) vs _current_slot(channels::Vector{Any}, ...), _get_or_create!(..., ::Nothing) vs concrete channel type). Use return values of concrete type instead of mutable fields after assignment so the compiler/JET infers narrow types.
 
