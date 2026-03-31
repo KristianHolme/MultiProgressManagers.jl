@@ -509,7 +509,7 @@ function format_duration(::Nothing, _)::String
 end
 
 function format_duration(started_at::DateTime, finished_at::Union{DateTime,Nothing})::String
-    end_time = finished_at === nothing ? now(UTC) : finished_at
+    end_time = finished_at === nothing ? now() : finished_at
     duration = end_time - started_at
     total_seconds = round(Int, Dates.value(duration) / 1000)
     
@@ -526,7 +526,8 @@ end
 
 function format_datetime(dt::Union{DateTime,Nothing})::String
     dt === nothing && return "Unknown"
-    return Dates.format(dt, "HH:MM:SS")
+    local_dt = instant_to_local_wall_datetime(dt)
+    return Dates.format(local_dt, dateformat"HH:mm:ss")
 end
 
 """
@@ -535,8 +536,9 @@ Format datetime for the Started column in tab 1. When include_date is true
 """
 function format_datetime_for_started_column(dt::Union{DateTime,Nothing}, include_date::Bool)::String
     dt === nothing && return "Unknown"
+    local_dt = instant_to_local_wall_datetime(dt)
     if include_date
-        return Dates.format(dt, "yyyy-mm-dd HH:MM")
+        return Dates.format(local_dt, dateformat"yyyy-mm-dd HH:mm")
     end
-    return Dates.format(dt, "HH:MM:SS")
+    return Dates.format(local_dt, dateformat"HH:mm:ss")
 end
