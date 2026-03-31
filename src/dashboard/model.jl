@@ -276,11 +276,11 @@ function _build_running_experiments(
             )
         end
 
-        remaining_steps = exp.total_steps - exp.current_step
-        eta_seconds = if speeds.short_avg_speed > 0
-            remaining_steps / speeds.short_avg_speed
-        else
+        eta_seconds = if exp_handle === nothing
             nothing
+        else
+            tasks = Database.get_task_snapshots(exp_handle, String(exp.id))
+            Database.estimate_experiment_eta_seconds(tasks)
         end
 
         return ExperimentSummary(

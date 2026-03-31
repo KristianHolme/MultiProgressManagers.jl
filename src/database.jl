@@ -12,6 +12,7 @@ export record_progress!, finish_experiment!, fail_experiment!
 export get_experiment, get_running_experiments, get_all_experiments
 export update_experiment_status!, update_experiment_steps!
 export calculate_speeds, get_recent_speeds
+export estimate_experiment_eta_seconds
 export get_experiment_stats, get_completion_histogram
 
 struct TaskSnapshot
@@ -531,6 +532,110 @@ function get_task_snapshots(handle::DBHandle, experiment_id::String)
             ismissing(row.description) ? "" : String(row.description),
         )
     end
+end
+
+function _per_task_step_speed(t::TaskSnapshot)::Union{Float64,Nothing}
+    elapsed = t.last_updated - t.started_at
+    if elapsed <= 0 || t.current_step <= 0
+        return nothing
+    end
+
+    return t.current_step / elapsed
+end
+
+function _default_task_length_steps(tasks::Vector{TaskSnapshot})::Union{Float64,Nothing}
+    completed_lengths = Float64[]
+    for t in tasks
+        if t.status == :completed && t.total_steps > 0
+            push!(completed_lengths, Float64(t.total_steps))
+        end
+    end
+    if !isempty(completed_lengths)
+        return sum(completed_lengths) / length(completed_lengths)
+    end
+
+    known = Float64[]
+    for t in tasks
+        if t.total_steps > 0
+            push!(known, Float64(t.total_steps))
+        end
+    end
+    if !isempty(known)
+        return sum(known) / length(known)
+    end
+
+    return nothing
+end
+
+"""
+    estimate_experiment_eta_seconds(tasks::Vector{TaskSnapshot}) -> Union{Float64,Nothing}
+
+Estimate seconds until the experiment finishes using per-task progress.
+
+Uses each task's own step speed when available (`current_step` / elapsed time), and falls back to
+the mean speed over tasks that already report progress. Tasks without `total_steps` use the mean
+length of completed tasks, then the mean known `total_steps` among non-completed tasks.
+
+For parallel workloads the completion time is modeled as the maximum of per-task time-to-finish
+(so a single slow task cannot make the experiment ETA shorter than that task's ETA). Returns
+`nothing` when there is not enough information.
+"""
+function estimate_experiment_eta_seconds(tasks::Vector{TaskSnapshot})
+    isempty(tasks) && return nothing
+
+    default_len = _default_task_length_steps(tasks)
+
+    speeds_active = Float64[]
+    for t in tasks
+        if t.status == :running || t.status == :pending
+            sp = _per_task_step_speed(t)
+            if sp !== nothing && sp > 0
+                push!(speeds_active, sp)
+            end
+        end
+    end
+
+    pooled_speed = isempty(speeds_active) ? 0.0 : sum(speeds_active) / length(speeds_active)
+
+    etas = Float64[]
+    for t in tasks
+        if t.status == :completed || t.status == :failed
+            continue
+        end
+
+        total_s = t.total_steps
+        cur = t.current_step
+        rem = if total_s > 0
+            max(0.0, Float64(total_s - cur))
+        elseif default_len !== nothing
+            max(0.0, default_len - Float64(cur))
+        else
+            -1.0
+        end
+        if rem <= 0
+            continue
+        end
+
+        own = _per_task_step_speed(t)
+        sp_use = if own !== nothing && own > 0
+            own
+        elseif pooled_speed > 0
+            pooled_speed
+        else
+            nothing
+        end
+        if sp_use === nothing || sp_use <= 0
+            continue
+        end
+
+        push!(etas, rem / sp_use)
+    end
+
+    if isempty(etas)
+        return nothing
+    end
+
+    return maximum(etas)
 end
 
 """

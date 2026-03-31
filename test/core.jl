@@ -662,6 +662,31 @@ end
     end
 end
 
+@testset "estimate_experiment_eta_seconds" begin
+    ts = Database.TaskSnapshot
+    eta = Database.estimate_experiment_eta_seconds
+
+    @test eta(ts[]) === nothing
+
+    # No pending/running work remaining
+    done_only = [ts(1, 10, 10, :completed, 0.0, 5.0, "", "")]
+    @test eta(done_only) === nothing
+
+    # Parallel pool: ETA is the max of per-task times (slow task dominates)
+    mixed = [
+        ts(1, 10, 9, :running, 0.0, 1.0, "", ""),      # rem 1 at 9 step/s
+        ts(2, 1000, 100, :running, 0.0, 100.0, "", ""), # rem 900 at 1 step/s
+    ]
+    @test eta(mixed) ≈ 900.0
+
+    # Pooled speed for tasks with no steps yet; max over tasks
+    with_pending = [
+        ts(1, 100, 50, :running, 0.0, 10.0, "", ""), # 5 step/s
+        ts(2, 100, 0, :pending, 10.0, 10.0, "", ""),   # uses pooled 5 step/s, 100 rem -> 20s
+    ]
+    @test eta(with_pending) ≈ 20.0
+end
+
 @testset "create_drill_callback requires Drill extension" begin
     test_db = tempname() * ".db"
     manager = MPM.ProgressManager("DrillExtRequired", 1; db_path = test_db)
