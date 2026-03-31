@@ -79,10 +79,11 @@ function main()
     println("All tasks completed!")
     println("="^60)
     println()
+    log_dir = dirname(db_path)
     println("View dashboard:")
-    println("  ./bin/mpm.jl $db_path")
+    println("  ./bin/mpm.jl $log_dir")
     println("Or:")
-    println("  julia -e 'using MultiProgressManagers; view_dashboard(\"$db_path\")'")
+    println("  julia -e 'using MultiProgressManagers; view_dashboard(\"$log_dir\")'")
     return println()
 end
 

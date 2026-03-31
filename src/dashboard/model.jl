@@ -55,7 +55,7 @@ end
     db_path::String = ""
     db_handle::Union{Database.DBHandle,Nothing} = nothing
     db_handles::Dict{String,Database.DBHandle} = Dict{String,Database.DBHandle}()
-    folder_mode::Bool = false  # true if viewing a folder of experiments
+    folder_mode::Bool = true  # always folder mode (single-file paths resolve to their directory)
     folder_path::String = ""
     available_dbs::Vector{String} = String[]
     
@@ -194,10 +194,6 @@ function _handle_for_experiment(m::ProgressDashboard, experiment_id::String)
 end
 
 function _refresh_folder_databases!(m::ProgressDashboard, current_time::Float64)
-    if !m.folder_mode
-        return nothing
-    end
-
     if (current_time - m._last_folder_discover) * 1000 < m.folder_discovery_interval_ms
         return nothing
     end
@@ -276,11 +272,11 @@ function _build_running_experiments(
             )
         end
 
-        remaining_steps = exp.total_steps - exp.current_step
-        eta_seconds = if speeds.short_avg_speed > 0
-            remaining_steps / speeds.short_avg_speed
-        else
+        eta_seconds = if exp_handle === nothing
             nothing
+        else
+            tasks = Database.get_task_snapshots(exp_handle, String(exp.id))
+            Database.estimate_experiment_eta_seconds(tasks)
         end
 
         return ExperimentSummary(
@@ -361,49 +357,42 @@ end
 
 Launch a Tachikoma dashboard for viewing experiment progress.
 
+Loads every `.db` file in the given directory (empty folders are allowed; new files appear on refresh).
+
 # Arguments
-- `db_path::String`: Path to experiment database file, or folder to watch for `.db` files (empty folders are allowed)
+- `db_path::String`: Path to the directory to watch for `.db` files.
 - `poll_frequency_ms::Int=500`: How often to poll database for updates (lower = more frequent)
 - `speed_window_seconds::Real=30`: Time window for short-horizon speed calculation
-- `folder_discovery_interval_ms::Int=5000`: In folder mode, how often to re-scan for new .db files
+- `folder_discovery_interval_ms::Int=5000`: How often to re-scan for new `.db` files
 
 # Examples
 ```julia
-# View single experiment
-view_dashboard("./progresslogs/experiment1.db")
-
-# View folder (shows experiment selector tab)
-view_dashboard("./progresslogs/")
+view_dashboard("./progresslogs")
 ```
 """
 function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_window_seconds::Real=30, folder_discovery_interval_ms::Int=5000)
-    # Determine if it's a folder or file
-    folder_mode = isdir(db_path)
-    
-    if folder_mode
-        # Find all .db files in folder (may be empty; new files are picked up on refresh)
-        available_dbs = _discover_db_files(db_path)
-
-        active_tab = 1
+    resolved = abspath(db_path)
+    folder_path = if isdir(resolved)
+        resolved
+    elseif isfile(resolved)
+        dirname(resolved)
     else
-        # Single file mode
-        if !isfile(db_path)
-            error("Database file not found: $db_path")
-        end
-        available_dbs = [db_path]
-        active_tab = 1
+        error("Path not found: $db_path")
     end
 
+    available_dbs = _discover_db_files(folder_path)
+    active_tab = 1
+
     db_handles = _open_dashboard_handles(available_dbs)
-    primary_db_path = folder_mode ? db_path : available_dbs[1]
-    primary_handle = folder_mode ? nothing : db_handles[available_dbs[1]]
+    primary_db_path = folder_path
+    primary_handle = nothing
 
     model = ProgressDashboard(
         db_path = primary_db_path,
         db_handle = primary_handle,
         db_handles = db_handles,
-        folder_mode = folder_mode,
-        folder_path = folder_mode ? db_path : "",
+        folder_mode = true,
+        folder_path = folder_path,
         available_dbs = available_dbs,
         active_tab = active_tab,
         poll_frequency_ms = poll_frequency_ms,

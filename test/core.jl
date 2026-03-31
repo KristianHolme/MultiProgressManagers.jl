@@ -215,14 +215,18 @@ end
 
 @testset "Dashboard: mock inputs and headless rendering" begin
     test_db = tempname() * ".db"
+    log_dir = dirname(test_db)
     manager = MPM.ProgressManager("DashMock", 3; db_path = test_db)
     try
         MPM.update!(manager, 1; step = 2, total_steps = 5, message = "epoch 2")
         MPM.update!(manager, 2; step = 1, total_steps = 3, message = "warmup")
 
         dashboard = MPM.ProgressDashboard(
-            db_path = test_db,
-            db_handle = manager.db_handle,
+            db_path = log_dir,
+            db_handles = Dict(test_db => manager.db_handle),
+            folder_mode = true,
+            folder_path = log_dir,
+            available_dbs = [test_db],
             poll_frequency_ms = 0,
         )
         MPM._poll_database!(dashboard)
@@ -323,6 +327,18 @@ end
         Database.close_db!(manager_two.db_handle)
         rm(db_one, force = true)
         rm(db_two, force = true)
+        rm(folder; force = true, recursive = true)
+    end
+end
+
+@testset "CLI resolves database file path to parent folder" begin
+    folder = mktempdir()
+    db_path = joinpath(folder, "solo.db")
+    try
+        touch(db_path)
+        @test MPM.CLI._resolve_dashboard_path(db_path) == folder
+    finally
+        rm(db_path, force = true)
         rm(folder; force = true, recursive = true)
     end
 end
@@ -660,6 +676,31 @@ end
         Database.close_db!(manager.db_handle)
         rm(test_db, force = true)
     end
+end
+
+@testset "estimate_experiment_eta_seconds" begin
+    ts = Database.TaskSnapshot
+    eta = Database.estimate_experiment_eta_seconds
+
+    @test eta(ts[]) === nothing
+
+    # No pending/running work remaining
+    done_only = [ts(1, 10, 10, :completed, 0.0, 5.0, "", "")]
+    @test eta(done_only) === nothing
+
+    # Parallel pool: ETA is the max of per-task times (slow task dominates)
+    mixed = [
+        ts(1, 10, 9, :running, 0.0, 1.0, "", ""),      # rem 1 at 9 step/s
+        ts(2, 1000, 100, :running, 0.0, 100.0, "", ""), # rem 900 at 1 step/s
+    ]
+    @test eta(mixed) ≈ 900.0
+
+    # Pooled speed for tasks with no steps yet; max over tasks
+    with_pending = [
+        ts(1, 100, 50, :running, 0.0, 10.0, "", ""), # 5 step/s
+        ts(2, 100, 0, :pending, 10.0, 10.0, "", ""),   # uses pooled 5 step/s, 100 rem -> 20s
+    ]
+    @test eta(with_pending) ≈ 20.0
 end
 
 @testset "create_drill_callback requires Drill extension" begin

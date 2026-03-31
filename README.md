@@ -30,8 +30,8 @@ using Pkg
 Pkg.Apps.add("MultiProgressManagers")
 ```
 
-Ensure `~/.julia/bin` is on your `PATH`. Then run `mpm <db_path>` or `mpm --help`.  
-You can also open the dashboard from Julia without the app: `view_dashboard(db_path)` (see Quick Start).
+Ensure `~/.julia/bin` is on your `PATH`. Then run `mpm <folder>` (the directory that contains your `.db` files) or `mpm --help`.  
+You can also open the dashboard from Julia without the app: `view_dashboard(folder)` (see Quick Start).
 
 ## Quick Start
 
@@ -113,8 +113,8 @@ callback = create_drill_callback(task)
 
 ### Viewing the Dashboard
 
-From the shell: `mpm ./progresslogs/experiment1.db` (requires the app; see Installation).  
-From Julia: `using MultiProgressManagers; view_dashboard("./progresslogs/experiment1.db")`.
+From the shell: `mpm ./progresslogs` opens the dashboard for every `.db` file in that folder (requires the app; see Installation).  
+From Julia: `using MultiProgressManagers; view_dashboard("./progresslogs")` does the same.
 
 ## Dashboard Tabs
 
