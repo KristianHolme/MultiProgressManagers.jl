@@ -1,10 +1,12 @@
 module MultiProgressManagers
 using Dates
+using TimeZones
 using UUIDs
 using Printf
 using Tachikoma
 
 # Include submodules
+include("localtime.jl")
 include("database.jl")
 include("types.jl")
 include("api.jl")

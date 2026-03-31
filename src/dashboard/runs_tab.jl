@@ -23,10 +23,15 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
     header_y = inner.y
     header_style = tstyle(:text_dim, bold = true)
 
-    # If oldest experiment was not started today, show date in Started column
-    today_utc = Dates.Date(Dates.now(Dates.UTC))
-    started_dates = [Dates.Date(exp.started_at) for exp in experiments if exp.started_at !== nothing]
-    show_date = !isempty(started_dates) && minimum(started_dates) < today_utc
+    # If oldest experiment was not started today (local calendar), show date in Started column
+    today_local = Dates.today()
+    started_dates = Dates.Date[]
+    for exp in experiments
+        sa = exp.started_at
+        sa === nothing && continue
+        push!(started_dates, Dates.Date(instant_to_local_wall_datetime(sa)))
+    end
+    show_date = !isempty(started_dates) && minimum(started_dates) < today_local
     time_col_width = show_date ? 16 : 10
 
     # Column positions
