@@ -25,7 +25,7 @@ function main()
     end
 
     finish!(manager)
-    return println("Done! View with: view_dashboard(\"$db_path\")")
+    return println("Done! View with: view_dashboard(\"$(dirname(db_path))\")")
 end
 
 main()

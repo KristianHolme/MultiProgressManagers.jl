@@ -215,14 +215,18 @@ end
 
 @testset "Dashboard: mock inputs and headless rendering" begin
     test_db = tempname() * ".db"
+    log_dir = dirname(test_db)
     manager = MPM.ProgressManager("DashMock", 3; db_path = test_db)
     try
         MPM.update!(manager, 1; step = 2, total_steps = 5, message = "epoch 2")
         MPM.update!(manager, 2; step = 1, total_steps = 3, message = "warmup")
 
         dashboard = MPM.ProgressDashboard(
-            db_path = test_db,
-            db_handle = manager.db_handle,
+            db_path = log_dir,
+            db_handles = Dict(test_db => manager.db_handle),
+            folder_mode = true,
+            folder_path = log_dir,
+            available_dbs = [test_db],
             poll_frequency_ms = 0,
         )
         MPM._poll_database!(dashboard)
@@ -323,6 +327,18 @@ end
         Database.close_db!(manager_two.db_handle)
         rm(db_one, force = true)
         rm(db_two, force = true)
+        rm(folder; force = true, recursive = true)
+    end
+end
+
+@testset "CLI resolves database file path to parent folder" begin
+    folder = mktempdir()
+    db_path = joinpath(folder, "solo.db")
+    try
+        touch(db_path)
+        @test MPM.CLI._resolve_dashboard_path(db_path) == folder
+    finally
+        rm(db_path, force = true)
         rm(folder; force = true, recursive = true)
     end
 end

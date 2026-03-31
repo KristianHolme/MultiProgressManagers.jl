@@ -33,7 +33,7 @@ function main()
 
     finish!(manager)
     println()
-    return println("Done! View with: mpm $db_path")
+    return println("Done! View with: mpm $(dirname(db_path))")
 end
 
 main()

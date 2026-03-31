@@ -66,20 +66,56 @@ function _render_tab_bar!(m::ProgressDashboard, area::Rect, buf)
     render(TabBar(labels; active = active_idx), area, buf)
 end
 
+"""
+Shorten an absolute folder path for the status line: replace the home directory prefix with `~`,
+then show at most the last `max_levels` path segments (joined with `/`).
+"""
+function _format_status_folder_path(path::String; max_levels::Int = 3)::String
+    isempty(strip(path)) && return "None"
+
+    p = abspath(path)
+    h = homedir()
+    display = if !isempty(h) && (p == h || startswith(p, h * "/") || startswith(p, h * "\\"))
+        if p == h
+            "~"
+        else
+            rest = p[length(h)+1:end]
+            if startswith(rest, "/") || startswith(rest, "\\")
+                rest = rest[2:end]
+            end
+            "~/" * replace(rest, '\\' => '/')
+        end
+    else
+        replace(p, '\\' => '/')
+    end
+
+    segs = filter(!isempty, split(display, '/'))
+    isempty(segs) && return "None"
+
+    if length(segs) > max_levels
+        segs = segs[(end - max_levels + 1):end]
+    end
+
+    return join(segs, '/')
+end
+
 function _render_status_bar!(m::ProgressDashboard, area::Rect, buf)
     # Build status info
     si = mod1(m.tick ÷ 3, length(SPINNER_BRAILLE))
     
-    # Connection info
-    db_name = !isempty(m.db_path) ? basename(m.db_path) : "None"
+    # Watched folder (shortened)
+    folder_label = _format_status_folder_path(m.folder_path; max_levels = 3)
+    if folder_label == "None" && !isempty(m.db_path)
+        folder_label = _format_status_folder_path(m.db_path; max_levels = 3)
+    end
     
     # Running count
     running_count = count(e -> e.status == :running, m.running_experiments)
     
     left = [
         Span(" $(SPINNER_BRAILLE[si]) ", tstyle(:accent)),
-        Span("DB: ", tstyle(:text_dim)),
-        Span(db_name, tstyle(:primary)),
+        Span("Folder: ", tstyle(:text_dim)),
+        Span(folder_label, tstyle(:primary)),
         Span("  $(DOT)  ", tstyle(:border)),
         Span("$(running_count) running", tstyle(:success)),
         Span("  $(DOT)  ", tstyle(:border)),
