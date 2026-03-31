@@ -101,29 +101,23 @@ function _view_experiment_detail_panel!(m::ProgressDashboard, area::Rect, buf)
         _ => tstyle(:text)
     end
 
-    # ETA: use task completion rate if available, else step rate
+    # ETA: per-task extrapolation with pooled fallback; max over tasks (parallel-safe)
     eta_str = "N/A"
     if status == :completed
         eta_str = "Done"
-    elseif status == :running && started_at !== nothing
-        elapsed_seconds = time() - Dates.datetime2unix(started_at)
-        if total_tasks > 0 && completed_tasks > 0
-            avg_time_per_task = elapsed_seconds / completed_tasks
-            remaining_tasks = total_tasks - completed_tasks
-            eta_seconds = avg_time_per_task * remaining_tasks
-            eta_hours = floor(Int, eta_seconds / 3600)
-            eta_mins = floor(Int, (eta_seconds % 3600) / 60)
-            eta_secs = floor(Int, eta_seconds % 60)
-            eta_str = eta_hours > 0 ? @sprintf("%dh %02dm %02ds", eta_hours, eta_mins, eta_secs) : @sprintf("%dm %02ds", eta_mins, eta_secs)
-        elseif total_steps > 0 && current_step > 0
-            avg_time_per_step = elapsed_seconds / current_step
-            remaining_steps = total_steps - current_step
-            eta_seconds = avg_time_per_step * remaining_steps
-            eta_hours = floor(Int, eta_seconds / 3600)
-            eta_mins = floor(Int, (eta_seconds % 3600) / 60)
-            eta_secs = floor(Int, eta_seconds % 60)
-            eta_str = eta_hours > 0 ? @sprintf("%dh %02dm %02ds", eta_hours, eta_mins, eta_secs) : @sprintf("%dm %02ds", eta_mins, eta_secs)
+    elseif status == :running
+        eta_seconds = if m._selected_tasks_loaded && exp.id == m.selected_experiment_id && !isempty(m._selected_tasks)
+            Database.estimate_experiment_eta_seconds(m._selected_tasks)
+        else
+            handle = _handle_for_experiment(m, exp.id)
+            if handle === nothing
+                nothing
+            else
+                tasks = Database.get_task_snapshots(handle, exp.id)
+                Database.estimate_experiment_eta_seconds(tasks)
+            end
         end
+        eta_str = format_eta(eta_seconds)
     end
 
     started_str = format_datetime_for_started_column(started_at, true)
