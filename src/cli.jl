@@ -7,13 +7,12 @@ function _help_text()
     mpm - MultiProgressManager Dashboard
 
     Usage:
-      mpm <path>                 View all .db files in the directory (if a file is given, its parent folder is used)
+      mpm <folder>               View all .db files in the folder
       mpm .                      View current directory (list .db files here)
       mpm --help                 Show this help message
 
     Examples:
-      mpm ./progresslogs/experiment1.db
-      mpm ./progresslogs/
+      mpm ./progresslogs
       mpm .
 
     Keyboard Shortcuts (in dashboard):

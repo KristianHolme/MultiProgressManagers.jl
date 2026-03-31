@@ -357,21 +357,17 @@ end
 
 Launch a Tachikoma dashboard for viewing experiment progress.
 
-Always uses folder mode: all `.db` files in the directory are loaded. If `db_path` is a file,
-the directory containing that file is used (so passing a `.db` path is equivalent to opening
-its parent folder).
+Loads every `.db` file in the given directory (empty folders are allowed; new files appear on refresh).
 
 # Arguments
-- `db_path::String`: Path to a directory to watch for `.db` files, or a file path (its parent directory is used). Empty folders are allowed.
+- `db_path::String`: Path to the directory to watch for `.db` files.
 - `poll_frequency_ms::Int=500`: How often to poll database for updates (lower = more frequent)
 - `speed_window_seconds::Real=30`: Time window for short-horizon speed calculation
 - `folder_discovery_interval_ms::Int=5000`: How often to re-scan for new `.db` files
 
 # Examples
 ```julia
-# All databases in a directory (pass a file to use that file's directory)
-view_dashboard("./progresslogs/experiment1.db")
-view_dashboard("./progresslogs/")
+view_dashboard("./progresslogs")
 ```
 """
 function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_window_seconds::Real=30, folder_discovery_interval_ms::Int=5000)

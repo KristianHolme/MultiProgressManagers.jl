@@ -9,7 +9,7 @@ This directory contains example scripts demonstrating the multi-task experiment 
 julia examples/simple_monitor.jl
 
 # View the dashboard
-mpm ./progresslogs/simple_monitor.db
+mpm ./progresslogs
 ```
 
 ## Examples Overview
@@ -84,11 +84,11 @@ After running any example, view the dashboard:
 
 ```bash
 # From shell
-mpm ./progresslogs/example.db
+mpm ./progresslogs
 
 # From Julia
 using MultiProgressManagers
-view_dashboard("./progresslogs/example.db")
+view_dashboard("./progresslogs")
 ```
 
 ### Dashboard Tabs
@@ -142,8 +142,8 @@ end
 
 finish!(manager)
 
-# View with: mpm ./progresslogs/my_exp.db or
-# using MultiProgressManagers; view_dashboard("./progresslogs/my_exp.db")
+# View with: mpm ./progresslogs or
+# using MultiProgressManagers; view_dashboard("./progresslogs")
 ```
 
 ### API Reference
