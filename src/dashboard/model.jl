@@ -498,7 +498,8 @@ function format_duration(::Nothing, _)::String
 end
 
 function format_duration(started_at::DateTime, finished_at::Union{DateTime,Nothing})::String
-    end_time = finished_at === nothing ? now() : finished_at
+    # DB times are UTC instants (`unix2datetime`); use the same basis for "now" — not `now()` (local wall clock).
+    end_time = finished_at === nothing ? unix2datetime(time()) : finished_at
     duration = end_time - started_at
     total_seconds = round(Int, Dates.value(duration) / 1000)
     
