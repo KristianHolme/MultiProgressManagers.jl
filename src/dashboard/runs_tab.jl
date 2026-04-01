@@ -34,12 +34,16 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
     show_date = !isempty(started_dates) && minimum(started_dates) < today_local
     time_col_width = show_date ? 16 : 10
 
+    # SelectableList renders row text at area.x + 2 (selection marker + gap); align headers.
+    list_text_offset = 2
+    ox = inner.x + list_text_offset
+
     # Column positions
-    col_time = inner.x
-    col_name = inner.x + time_col_width
-    col_status = inner.x + time_col_width + 25
-    col_progress = inner.x + time_col_width + 38
-    col_duration = inner.x + time_col_width + 55
+    col_time = ox
+    col_name = ox + time_col_width
+    col_status = ox + time_col_width + 25
+    col_progress = ox + time_col_width + 38
+    col_duration = ox + time_col_width + 55
 
     set_string!(buf, col_time, header_y, "Started", header_style)
     set_string!(buf, col_name, header_y, "Name", header_style)
