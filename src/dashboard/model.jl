@@ -516,7 +516,7 @@ end
 function format_datetime(dt::Union{DateTime,Nothing})::String
     dt === nothing && return "Unknown"
     local_dt = instant_to_local_wall_datetime(dt)
-    return Dates.format(local_dt, dateformat"HH:mm:ss")
+    return Dates.format(local_dt, dateformat"HH:MM:SS")
 end
 
 """
@@ -527,7 +527,7 @@ function format_datetime_for_started_column(dt::Union{DateTime,Nothing}, include
     dt === nothing && return "Unknown"
     local_dt = instant_to_local_wall_datetime(dt)
     if include_date
-        return Dates.format(local_dt, dateformat"yyyy-mm-dd HH:mm")
+        return Dates.format(local_dt, dateformat"yyyy-mm-dd HH:MM")
     end
-    return Dates.format(local_dt, dateformat"HH:mm:ss")
+    return Dates.format(local_dt, dateformat"HH:MM:SS")
 end
