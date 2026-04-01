@@ -53,13 +53,16 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
     min_progress_w = 10
     min_duration_w = 8
 
-    # Sample rows to size columns (cap work for huge lists)
+    # Sample rows to size tail columns (cap work for huge lists)
     sample_n = min(length(experiments), 64)
     max_status_w = min_status_w
     max_progress_w = min_progress_w
     max_duration_w = min_duration_w
+    max_name_len = 0
     for i in 1:sample_n
         exp = experiments[i]
+        nm = isempty(exp.name) ? "Unknown" : exp.name
+        max_name_len = max(max_name_len, length(nm))
         status = String(exp.status)
         total_tasks = exp.total_tasks
         completed_tasks = exp.completed_tasks
@@ -71,6 +74,11 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
         max_status_w = max(max_status_w, length(status))
         max_progress_w = max(max_progress_w, length(progress_str))
         max_duration_w = max(max_duration_w, length(duration_str))
+    end
+    # Longest name may occur outside the sample; one cheap pass over names only
+    for exp in experiments
+        nm = isempty(exp.name) ? "Unknown" : exp.name
+        max_name_len = max(max_name_len, length(nm))
     end
 
     avail = inner.width
@@ -84,8 +92,12 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
         return time_col_width + 1 + nw + 1 + sw + 1 + pw + 1 + dw
     end
 
-    # Prefer a wide name column: all extra horizontal space goes to `name_w` once tails are sized
-    name_w = avail - _runs_row_width(0, status_w, progress_w, duration_w)
+    # Pack columns to the left: name width fits content (capped by space), extra room stays empty on the right
+    function _nw_max(sw::Int, pw::Int, dw::Int)::Int
+        return avail - _runs_row_width(0, sw, pw, dw)
+    end
+
+    name_w = _nw_max(status_w, progress_w, duration_w)
     deficit = min_name_w - name_w
     if deficit > 0
         take = min(deficit, duration_w - min_duration_w)
@@ -102,7 +114,7 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
         status_w -= take
         deficit -= take
     end
-    name_w = avail - _runs_row_width(0, status_w, progress_w, duration_w)
+    name_w = _nw_max(status_w, progress_w, duration_w)
     while name_w < 1
         shrunk = false
         if duration_w > 1
@@ -118,9 +130,9 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
         if !shrunk
             break
         end
-        name_w = avail - _runs_row_width(0, status_w, progress_w, duration_w)
+        name_w = _nw_max(status_w, progress_w, duration_w)
     end
-    name_w = max(1, name_w)
+    name_w = min(max(min_name_w, max_name_len), max(1, name_w))
 
     col_time = inner.x
     col_name = col_time + time_col_width + 1
