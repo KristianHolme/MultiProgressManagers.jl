@@ -2,6 +2,20 @@
 Runs list tab - shows all experiments from the database.
 """
 
+"""Truncate `s` to at most `max_chars` display characters; append `...` when shortened (UTF-8 safe)."""
+function _truncate_display(s::String, max_chars::Int)::String
+    max_chars < 1 && return ""
+    if length(s) <= max_chars
+        return s
+    end
+    if max_chars <= 3
+        return String(collect(s)[1:max_chars])
+    end
+    head = max_chars - 3
+    chars = collect(s)
+    return String(chars[1:head]) * "..."
+end
+
 function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
     # Render outer block
     outer = Block(
@@ -34,19 +48,106 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
     show_date = !isempty(started_dates) && minimum(started_dates) < today_local
     time_col_width = show_date ? 16 : 10
 
-    # Column positions
-    col_time = inner.x
-    col_name = inner.x + time_col_width
-    col_status = inner.x + time_col_width + 25
-    col_progress = inner.x + time_col_width + 38
-    col_duration = inner.x + time_col_width + 55
+    # Minimum widths for Status / Completed / Duration (may shrink if the terminal is narrow)
+    min_status_w = 8
+    min_progress_w = 10
+    min_duration_w = 8
+
+    # Sample rows to size tail columns (cap work for huge lists)
+    sample_n = min(length(experiments), 64)
+    max_status_w = min_status_w
+    max_progress_w = min_progress_w
+    max_duration_w = min_duration_w
+    max_name_len = 0
+    for i in 1:sample_n
+        exp = experiments[i]
+        nm = isempty(exp.name) ? "Unknown" : exp.name
+        max_name_len = max(max_name_len, length(nm))
+        status = String(exp.status)
+        total_tasks = exp.total_tasks
+        completed_tasks = exp.completed_tasks
+        progress_pct = total_tasks > 0 ? (completed_tasks / total_tasks) * 100 : 0.0
+        started_at = exp.started_at
+        finished_at = exp.finished_at
+        progress_str = @sprintf("%d/%d (%.0f%%)", completed_tasks, total_tasks, progress_pct)
+        duration_str = format_duration(started_at, finished_at)
+        max_status_w = max(max_status_w, length(status))
+        max_progress_w = max(max_progress_w, length(progress_str))
+        max_duration_w = max(max_duration_w, length(duration_str))
+    end
+    # Longest name may occur outside the sample; one cheap pass over names only
+    for exp in experiments
+        nm = isempty(exp.name) ? "Unknown" : exp.name
+        max_name_len = max(max_name_len, length(nm))
+    end
+
+    avail = inner.width
+    min_name_w = 4
+
+    status_w = max(min_status_w, max_status_w)
+    progress_w = max(min_progress_w, max_progress_w)
+    duration_w = max(min_duration_w, max_duration_w)
+
+    function _runs_row_width(nw::Int, sw::Int, pw::Int, dw::Int)::Int
+        return time_col_width + 1 + nw + 1 + sw + 1 + pw + 1 + dw
+    end
+
+    # Pack columns to the left: name width fits content (capped by space), extra room stays empty on the right
+    function _nw_max(sw::Int, pw::Int, dw::Int)::Int
+        return avail - _runs_row_width(0, sw, pw, dw)
+    end
+
+    name_w = _nw_max(status_w, progress_w, duration_w)
+    deficit = min_name_w - name_w
+    if deficit > 0
+        take = min(deficit, duration_w - min_duration_w)
+        duration_w -= take
+        deficit -= take
+    end
+    if deficit > 0
+        take = min(deficit, progress_w - min_progress_w)
+        progress_w -= take
+        deficit -= take
+    end
+    if deficit > 0
+        take = min(deficit, status_w - min_status_w)
+        status_w -= take
+        deficit -= take
+    end
+    name_w = _nw_max(status_w, progress_w, duration_w)
+    while name_w < 1
+        shrunk = false
+        if duration_w > 1
+            duration_w -= 1
+            shrunk = true
+        elseif progress_w > 1
+            progress_w -= 1
+            shrunk = true
+        elseif status_w > 1
+            status_w -= 1
+            shrunk = true
+        end
+        if !shrunk
+            break
+        end
+        name_w = _nw_max(status_w, progress_w, duration_w)
+    end
+    name_w = min(max(min_name_w, max_name_len), max(1, name_w))
+
+    # SelectableList draws row text at `text_area.x + 2` (marker column + space); align headers.
+    list_text_x = inner.x + 2
+    col_time = list_text_x
+    col_name = col_time + time_col_width + 1
+    col_status = col_name + name_w + 1
+    col_progress = col_status + status_w + 1
+    col_duration = col_progress + progress_w + 1
 
     set_string!(buf, col_time, header_y, "Started", header_style)
     set_string!(buf, col_name, header_y, "Name", header_style)
     set_string!(buf, col_status, header_y, "Status", header_style)
     set_string!(buf, col_progress, header_y, "Completed", header_style)
     set_string!(buf, col_duration, header_y, "Duration", header_style)
-    
+
     # Prepare items for SelectableList
     items = map(experiments) do exp
         name = isempty(exp.name) ? "Unknown" : exp.name
@@ -59,21 +160,23 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
         duration_str = format_duration(started_at, finished_at)
         start_time_str = format_datetime_for_started_column(started_at, show_date)
         progress_str = @sprintf("%d/%d (%.0f%%)", completed_tasks, total_tasks, progress_pct)
-        label = if show_date
-            @sprintf("%-16s %-24s %-12s %-18s %-15s",
-                    start_time_str,
-                    length(name) > 23 ? name[1:20] * "..." : name,
-                    status,
-                    progress_str,
-                    duration_str)
-        else
-            @sprintf("%-10s %-24s %-12s %-18s %-15s",
-                    start_time_str,
-                    length(name) > 23 ? name[1:20] * "..." : name,
-                    status,
-                    progress_str,
-                    duration_str)
-        end
+        name_disp = _truncate_display(name, name_w)
+        status_disp = _truncate_display(status, status_w)
+        progress_disp = _truncate_display(progress_str, progress_w)
+        duration_disp = _truncate_display(duration_str, duration_w)
+        label = @sprintf(
+            "%-*s %-*s %-*s %-*s %-*s",
+            time_col_width,
+            start_time_str,
+            name_w,
+            name_disp,
+            status_w,
+            status_disp,
+            progress_w,
+            progress_disp,
+            duration_w,
+            duration_disp,
+        )
 
         style = @match Symbol(status) begin
             :running => tstyle(:warning)
@@ -81,8 +184,8 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
             :failed => tstyle(:error)
             _ => tstyle(:text)
         end
-        
-        ListItem(label, style)
+
+        return ListItem(label, style)
     end
     
     # Render SelectableList
