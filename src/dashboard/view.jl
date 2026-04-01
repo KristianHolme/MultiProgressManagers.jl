@@ -114,7 +114,6 @@ function _render_status_bar!(m::ProgressDashboard, area::Rect, buf)
     
     left = [
         Span(" $(SPINNER_BRAILLE[si]) ", tstyle(:accent)),
-        Span("Folder: ", tstyle(:text_dim)),
         Span(folder_label, tstyle(:primary)),
         Span("  $(DOT)  ", tstyle(:border)),
         Span("$(running_count) running", tstyle(:success)),
