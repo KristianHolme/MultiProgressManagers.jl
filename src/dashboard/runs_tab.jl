@@ -134,7 +134,9 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
     end
     name_w = min(max(min_name_w, max_name_len), max(1, name_w))
 
-    col_time = inner.x
+    # SelectableList draws row text at `text_area.x + 2` (marker column + space); align headers.
+    list_text_x = inner.x + 2
+    col_time = list_text_x
     col_name = col_time + time_col_width + 1
     col_status = col_name + name_w + 1
     col_progress = col_status + status_w + 1
