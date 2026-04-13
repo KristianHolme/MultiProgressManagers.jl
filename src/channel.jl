@@ -121,8 +121,8 @@ function get_task(manager::ProgressManager, task_number::Int, type::Symbol = :lo
 end
 
 """
-    update!(task::ProgressTask; step::Int,
-            total_steps::Union{Int,Nothing}=nothing,
+update!(task::ProgressTask; step::Uinion{Int, Nothing} = nothing,
+            total_steps::Union{Int,Nothing} = nothing,
             message::String="")
 
 Send a progress update for this task. The master's listener will call `update!` on the DB.
