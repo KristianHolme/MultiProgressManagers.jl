@@ -219,16 +219,9 @@ function _refresh_folder_databases!(m::ProgressDashboard, current_time::Float64)
 end
 
 function _collect_experiment_frames(handle_pairs)
-    running_frames = DataFrame[]
     all_frames = DataFrame[]
 
     for (source_db_path, handle) in handle_pairs
-        experiments = Database.get_running_experiments(handle)
-        if !isempty(experiments)
-            experiments.source_db_path = fill(source_db_path, nrow(experiments))
-            push!(running_frames, experiments)
-        end
-
         all_exps = Database.get_all_experiments(handle; limit = 100)
         if !isempty(all_exps)
             all_exps.source_db_path = fill(source_db_path, nrow(all_exps))
@@ -236,65 +229,40 @@ function _collect_experiment_frames(handle_pairs)
         end
     end
 
-    running_experiments_df = isempty(running_frames) ? DataFrame() : vcat(running_frames..., cols = :union)
-    if !isempty(running_experiments_df)
-        sort!(running_experiments_df, :started_at, rev = true)
+    if isempty(all_frames)
+        return DataFrame()
     end
 
-    all_experiments_df = isempty(all_frames) ? DataFrame() : vcat(all_frames..., cols = :union)
-    if !isempty(all_experiments_df)
-        sort!(all_experiments_df, :started_at, rev = true)
-    end
-
-    return running_experiments_df, all_experiments_df
+    all_experiments_df = vcat(all_frames..., cols = :union)
+    sort!(all_experiments_df, :started_at, rev = true)
+    return all_experiments_df
 end
 
-function _build_running_experiments(
-    m::ProgressDashboard,
-    running_experiments_df::DataFrame,
-)
-    return map(eachrow(running_experiments_df)) do exp
-        source_db_path = String(exp.source_db_path)
-        exp_handle = _handle_for_db_path(m, source_db_path)
-        speeds = if exp_handle === nothing
-            (total_avg_speed = 0.0, short_avg_speed = 0.0)
-        else
-            Database.calculate_speeds(exp_handle, exp.id; window_seconds = m.speed_window_seconds)
-        end
-        sparkline = if exp_handle === nothing
-            Float64[]
-        else
-            Database.get_recent_speeds(
-                exp_handle,
-                exp.id;
-                n = 20,
-                window_seconds = m.speed_window_seconds,
-            )
+function _build_running_experiments(admin_experiments::Vector{ExperimentAdminView})
+    running = ExperimentSummary[]
+    for exp in admin_experiments
+        if exp.status != :running
+            continue
         end
 
-        eta_seconds = if exp_handle === nothing
-            nothing
-        else
-            tasks = Database.get_task_snapshots(exp_handle, String(exp.id))
-            Database.estimate_experiment_eta_seconds(tasks)
-        end
-
-        return ExperimentSummary(
-            id = ismissing(exp.id) ? "" : String(exp.id),
-            name = ismissing(exp.name) ? "Unknown" : String(exp.name),
-            source_db_path = source_db_path,
-            progress_pct = ismissing(exp.progress_pct) ? 0.0 : Float64(exp.progress_pct),
-            status = ismissing(exp.status) ? :unknown : Symbol(exp.status),
-            started_at = _normalized_datetime(exp.started_at),
-            total_avg_speed = speeds.total_avg_speed,
-            short_avg_speed = speeds.short_avg_speed,
-            eta_seconds = eta_seconds,
-            sparkline = sparkline,
+        push!(
+            running,
+            ExperimentSummary(
+                id = exp.id,
+                name = exp.name,
+                source_db_path = exp.source_db_path,
+                status = exp.status,
+                started_at = exp.started_at,
+            ),
+        )
         )
     end
+    return running
 end
 
 function _build_admin_experiments(all_experiments_df::DataFrame)
+    isempty(all_experiments_df) && return ExperimentAdminView[]
+
     return map(eachrow(all_experiments_df)) do exp
         return ExperimentAdminView(
             id = ismissing(exp.id) ? "" : String(exp.id),
@@ -401,7 +369,7 @@ function view_dashboard(db_path::String; poll_frequency_ms::Int=500, speed_windo
     )
 
     try
-        Tachikoma.app(model; fps=60)
+        Tachikoma.app(model; fps = 30)
     finally
         _close_dashboard_handles!(db_handles)
     end
@@ -439,10 +407,10 @@ function _poll_database!(m::ProgressDashboard)
         return nothing
     end
 
-    running_experiments_df, all_experiments_df = _collect_experiment_frames(handle_pairs)
-    m.running_experiments = _build_running_experiments(m, running_experiments_df)
+    all_experiments_df = _collect_experiment_frames(handle_pairs)
     m.admin_experiments = _build_admin_experiments(all_experiments_df)
-    
+    m.running_experiments = _build_running_experiments(m.admin_experiments)
+
     if isempty(m.admin_experiments)
         m.admin_selected = 0
     elseif m.admin_selected > length(m.admin_experiments)
