@@ -204,6 +204,7 @@ function _init_schema!(db::SQLite.DB)
 
     DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_exp_status ON experiments(status)")
     DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_tasks_exp ON tasks(experiment_id)")
+    DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_tasks_exp_status ON tasks(experiment_id, status)")
     return nothing
 end
 
@@ -514,23 +515,51 @@ function get_experiment_tasks(handle::DBHandle, experiment_id::String)
     end
 end
 
-function get_task_snapshots(handle::DBHandle, experiment_id::String)
-    tasks = get_experiment_tasks(handle, experiment_id)
-    if isempty(tasks)
-        return TaskSnapshot[]
-    end
+_snapshot_int(::Missing) = 0
+_snapshot_int(value::Integer) = Int(value)
+_snapshot_int(value) = Int(value)
 
-    return map(eachrow(tasks)) do row
-        return TaskSnapshot(
-            Int(row.task_number),
-            ismissing(row.total_steps) ? 0 : Int(row.total_steps),
-            ismissing(row.current_step) ? 0 : Int(row.current_step),
-            _status_symbol(row.status),
-            ismissing(row.started_at) ? 0.0 : Float64(row.started_at),
-            ismissing(row.last_updated) ? 0.0 : Float64(row.last_updated),
-            ismissing(row.display_message) ? "" : String(row.display_message),
-            ismissing(row.description) ? "" : String(row.description),
+_snapshot_float(::Missing) = 0.0
+_snapshot_float(value::Real) = Float64(value)
+_snapshot_float(value) = Float64(value)
+
+_snapshot_str(::Missing) = ""
+_snapshot_str(::Nothing) = ""
+_snapshot_str(value::AbstractString) = String(value)
+_snapshot_str(value) = String(value)
+
+function get_task_snapshots(handle::DBHandle, experiment_id::String)
+    db = ensure_open!(handle)
+
+    return with_retry() do
+        snapshots = TaskSnapshot[]
+        cursor = DBInterface.execute(
+            db,
+            """
+            SELECT task_number, total_steps, current_step, status,
+                   started_at, last_updated, display_message, description
+            FROM tasks
+            WHERE experiment_id = ?
+            ORDER BY task_number
+            """,
+            [experiment_id]
         )
+        for row in cursor
+            push!(
+                snapshots,
+                TaskSnapshot(
+                    _snapshot_int(row.task_number),
+                    _snapshot_int(row.total_steps),
+                    _snapshot_int(row.current_step),
+                    _status_symbol(row.status),
+                    _snapshot_float(row.started_at),
+                    _snapshot_float(row.last_updated),
+                    _snapshot_str(row.display_message),
+                    _snapshot_str(row.description),
+                ),
+            )
+        end
+        return snapshots
     end
 end
 
@@ -901,17 +930,21 @@ function get_all_experiments(handle::DBHandle; limit::Int=100, offset::Int=0)
                 e.status,
                 e.started_at,
                 e.finished_at,
-                COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) as completed_tasks,
+                COALESCE(c.completed_tasks, 0) as completed_tasks,
                 0 as total_steps,
                 0 as current_step,
                 CASE
                     WHEN e.total_tasks > 0
-                    THEN CAST(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) AS FLOAT) / e.total_tasks
+                    THEN CAST(COALESCE(c.completed_tasks, 0) AS FLOAT) / e.total_tasks
                     ELSE 0
                 END as progress_pct
             FROM experiments e
-            LEFT JOIN tasks t ON t.experiment_id = e.id
-            GROUP BY e.id
+            LEFT JOIN (
+                SELECT experiment_id, COUNT(*) as completed_tasks
+                FROM tasks
+                WHERE status = 'completed'
+                GROUP BY experiment_id
+            ) c ON c.experiment_id = e.id
             ORDER BY e.started_at DESC
             LIMIT ? OFFSET ?
             """,

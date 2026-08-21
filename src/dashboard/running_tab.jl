@@ -106,16 +106,10 @@ function _view_experiment_detail_panel!(m::ProgressDashboard, area::Rect, buf)
     if status == :completed
         eta_str = "Done"
     elseif status == :running
-        eta_seconds = if m._selected_tasks_loaded && exp.id == m.selected_experiment_id && !isempty(m._selected_tasks)
+        eta_seconds = if m._selected_tasks_loaded && exp.id == m.selected_experiment_id
             Database.estimate_experiment_eta_seconds(m._selected_tasks)
         else
-            handle = _handle_for_experiment(m, exp.id)
-            if handle === nothing
-                nothing
-            else
-                tasks = Database.get_task_snapshots(handle, exp.id)
-                Database.estimate_experiment_eta_seconds(tasks)
-            end
+            nothing
         end
         eta_str = format_eta(eta_seconds)
     end

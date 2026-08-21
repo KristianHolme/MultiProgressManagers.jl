@@ -5,15 +5,14 @@ Runs list tab - shows all experiments from the database.
 """Truncate `s` to at most `max_chars` display characters; append `...` when shortened (UTF-8 safe)."""
 function _truncate_display(s::String, max_chars::Int)::String
     max_chars < 1 && return ""
-    if length(s) <= max_chars
+    nchars = length(s)
+    if nchars <= max_chars
         return s
     end
     if max_chars <= 3
-        return String(collect(s)[1:max_chars])
+        return String(first(s, max_chars))
     end
-    head = max_chars - 3
-    chars = collect(s)
-    return String(chars[1:head]) * "..."
+    return String(first(s, max_chars - 3)) * "..."
 end
 
 function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
