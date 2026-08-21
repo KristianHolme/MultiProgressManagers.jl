@@ -556,7 +556,7 @@ function get_task_snapshots(handle::DBHandle, experiment_id::String)
                     _snapshot_float(row.last_updated),
                     _snapshot_str(row.display_message),
                     _snapshot_str(row.description),
-                )
+                ),
             )
         end
         return snapshots
