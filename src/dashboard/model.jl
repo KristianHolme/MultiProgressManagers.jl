@@ -255,7 +255,6 @@ function _build_running_experiments(admin_experiments::Vector{ExperimentAdminVie
                 started_at = exp.started_at,
             ),
         )
-        )
     end
     return running
 end

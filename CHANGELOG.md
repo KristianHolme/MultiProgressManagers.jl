@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Speed up the Tachikoma dashboard poll loop: stop issuing unused per-experiment speed/sparkline/ETA queries, skip the extra running-experiments query, read task snapshots without allocating DataFrames, cache the local timezone, and render at 30 fps.
+- [#43](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/43) Speed up the Tachikoma dashboard poll loop: stop issuing unused per-experiment speed/sparkline/ETA queries, skip the extra running-experiments query, read task snapshots without allocating DataFrames, cache the local timezone, and render at 30 fps.
 
 ## [0.1.1]
 
