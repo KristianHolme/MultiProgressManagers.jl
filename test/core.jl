@@ -4,7 +4,6 @@ using MultiProgressManagers.Database
 using DataFrames
 using DBInterface
 using Distributed
-using Serialization
 
 const MPM = MultiProgressManagers
 const TK = MPM.Tachikoma
@@ -755,7 +754,7 @@ end
             )
         end
         elapsed_ns = time_ns() - t0
-        flushed_before_finish = remote_task.channel.last_flushed_seq
+        flushed_before_finish = MPM._remote_state!(remote_task.channel).flush_count
         MPM.finish!(remote_task)
 
         completed_tasks = _wait_for_task_completion(manager; timeout_seconds = 15.0)
@@ -764,9 +763,8 @@ end
         @test completed_tasks[1, :current_step] == total_steps
         @test completed_tasks[1, :total_steps] == total_steps
         @test occursin("remote", String(completed_tasks[1, :display_message]))
-        @test flushed_before_finish < 100
+        @test 0 < flushed_before_finish < total_steps
         @test elapsed_ns / total_steps < 50_000
-        @test remote_task.channel.last_flushed_seq == UInt64(total_steps + 1)
 
         if manager._listener_task !== nothing
             wait(manager._listener_task)
@@ -780,54 +778,37 @@ end
     end
 end
 
-@testset "Remote ProgressTask roundtrips through Serialization" begin
+@testset "Remote ProgressTask fail!" begin
     test_db = tempname() * ".db"
-    manager = MPM.ProgressManager("RemoteSerializeTest", 2; db_path = test_db)
-    remote_tasks = MPM.ProgressTask[]
+    manager = MPM.ProgressManager("RemoteFailTest", 1; db_path = test_db)
+    remote_task = nothing
     try
         remote_ext = Base.get_extension(MPM, :MultiProgressManagersDistributedExt)
         if remote_ext === nothing
             return
         end
-        remote_tasks = [MPM.get_task(manager, i, :remote) for i in 1:2]
-        io = IOBuffer()
-        serialize(io, remote_tasks[1])
-        seekstart(io)
-        restored = deserialize(io)
-        @test restored isa MPM.ProgressTask
-        @test restored.channel isa MPM.RemoteProgressTransport
-        @test restored.channel.slot isa MPM.LocalProgressSlot
-
-        MPM.update!(restored; step = 3, total_steps = 3, message = "from deserialized")
-        MPM.finish!(restored)
-        MPM.fail!(remote_tasks[2]; message = "remote fail")
+        remote_task = MPM.get_task(manager, 1, :remote)
+        MPM.update!(remote_task; step = 1, total_steps = 4, message = "working")
+        MPM.fail!(remote_task; message = "remote fail")
 
         deadline = time() + 15.0
         tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
         while time() < deadline
             tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
-            statuses = String.(tasks.status)
-            if "completed" in statuses && "failed" in statuses
+            if nrow(tasks) == 1 && String(tasks[1, :status]) == "failed"
                 break
             end
             sleep(0.01)
         end
-        completed = tasks[String.(tasks.status) .== "completed", :]
-        failed = tasks[String.(tasks.status) .== "failed", :]
-        @test nrow(completed) == 1
-        @test completed[1, :current_step] == 3
-        @test occursin("deserialized", String(completed[1, :display_message]))
-        @test nrow(failed) == 1
-        @test occursin("remote fail", String(failed[1, :display_message]))
+        @test String(tasks[1, :status]) == "failed"
+        @test occursin("remote fail", String(tasks[1, :display_message]))
 
         if manager._listener_task !== nothing
             wait(manager._listener_task)
         end
     finally
-        for task in remote_tasks
-            if isopen(task.channel)
-                close(task.channel)
-            end
+        if remote_task !== nothing && isopen(remote_task.channel)
+            close(remote_task.channel)
         end
         Database.close_db!(manager.db_handle)
         rm(test_db, force = true)

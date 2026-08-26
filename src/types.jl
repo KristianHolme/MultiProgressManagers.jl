@@ -48,27 +48,27 @@ mutable struct LocalProgressSlot
     message::String
 end
 
-"""
-    RemoteProgressTransport
-
-Worker-side overwrite-latest mailbox in front of a `RemoteChannel`. Callers
-store into `slot`; the worker sends the latest state over `channel` at most
-every 10 ms, and always on `finish!` / `fail!`.
-"""
-mutable struct RemoteProgressTransport{C}
-    channel::C
+mutable struct RemoteWorkerState
     slot::LocalProgressSlot
     last_flushed_seq::UInt64
     last_flush_ns::UInt64
+    flush_count::Int
+end
+
+"""
+    RemoteProgressTransport
+
+Handle for a `RemoteChannel` used by Distributed workers. `state` is created
+lazily on first `update!` in this process so a `SpinLock` is not sent over
+the wire with the task handle.
+"""
+mutable struct RemoteProgressTransport{C}
+    channel::C
+    state::Union{RemoteWorkerState, Nothing}
 end
 
 function RemoteProgressTransport(channel::C) where {C}
-    return RemoteProgressTransport{C}(
-        channel,
-        LocalProgressSlot(Threads.SpinLock(), 0, 0, SLOT_ACTIVE, UInt64(0), ""),
-        UInt64(0),
-        UInt64(0),
-    )
+    return RemoteProgressTransport{C}(channel, nothing)
 end
 
 """Handle for a single task; workers use this to report progress."""

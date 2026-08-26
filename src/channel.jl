@@ -8,6 +8,34 @@ const DEFAULT_CHANNEL_CAPACITY = 4096
 const LISTENER_COALESCE_SECONDS = 0.01
 const REMOTE_FLUSH_INTERVAL_NS = UInt64(10_000_000)
 
+function _new_remote_worker_state()
+    return RemoteWorkerState(
+        LocalProgressSlot(Threads.SpinLock(), 0, 0, SLOT_ACTIVE, UInt64(0), ""),
+        UInt64(0),
+        UInt64(0),
+        0,
+    )
+end
+
+function _remote_state!(transport::RemoteProgressTransport)
+    return _unwrap_remote_state(transport.state, transport)
+end
+
+function _unwrap_remote_state(state::RemoteWorkerState, ::RemoteProgressTransport)
+    return state
+end
+
+function _unwrap_remote_state(::Nothing, transport::RemoteProgressTransport)
+    state = _new_remote_worker_state()
+    transport.state = state
+    return state
+end
+
+function _drop_remote_state!(transport::RemoteProgressTransport)
+    transport.state = nothing
+    return nothing
+end
+
 function _spawn_background(f::F) where {F}
     if Threads.nthreads(:interactive) > 0
         return Threads.@spawn :interactive f()
@@ -108,19 +136,23 @@ function _flush_remote_transport!(
         task_number::Int,
         now_ns::UInt64,
     )
-    seq, current_step, total_steps, status, message = _copy_slot(transport.slot)
-    if seq == transport.last_flushed_seq
+    state = _remote_state!(transport)
+    seq, current_step, total_steps, status, message = _copy_slot(state.slot)
+    if seq == state.last_flushed_seq
         return nothing
     end
-    transport.last_flushed_seq = seq
-    transport.last_flush_ns = now_ns
+    state.last_flushed_seq = seq
+    state.last_flush_ns = now_ns
+    state.flush_count += 1
     ch = transport.channel
     if status == SLOT_FINISHED
         put!(ch, ProgressUpdate(task_number, current_step, total_steps, message))
         put!(ch, TaskFinished(task_number))
+        _drop_remote_state!(transport)
     elseif status == SLOT_FAILED
         put!(ch, ProgressUpdate(task_number, current_step, total_steps, message))
         put!(ch, TaskFailed(task_number, message))
+        _drop_remote_state!(transport)
     else
         put!(ch, ProgressUpdate(task_number, current_step, total_steps, message))
     end
@@ -128,8 +160,9 @@ function _flush_remote_transport!(
 end
 
 function _maybe_flush_remote!(transport::RemoteProgressTransport, task_number::Int)
+    state = _remote_state!(transport)
     now_ns = time_ns()
-    if now_ns - transport.last_flush_ns < REMOTE_FLUSH_INTERVAL_NS
+    if now_ns - state.last_flush_ns < REMOTE_FLUSH_INTERVAL_NS
         return nothing
     end
     _flush_remote_transport!(transport, task_number, now_ns)
@@ -338,7 +371,7 @@ function update!(
         message::String = "",
     )
     transport = task.channel
-    _publish_update!(transport.slot, step, total_steps, message)
+    _publish_update!(_remote_state!(transport).slot, step, total_steps, message)
     _maybe_flush_remote!(transport, task.task_number)
     return nothing
 end
@@ -366,7 +399,7 @@ end
 
 function finish!(task::ProgressTask{<:RemoteProgressTransport})
     transport = task.channel
-    _publish_finish!(transport.slot)
+    _publish_finish!(_remote_state!(transport).slot)
     _flush_remote_transport!(transport, task.task_number, time_ns())
     return nothing
 end
@@ -388,7 +421,7 @@ end
 
 function fail!(task::ProgressTask{<:RemoteProgressTransport}; message::String = "Task failed")
     transport = task.channel
-    _publish_fail!(transport.slot, message)
+    _publish_fail!(_remote_state!(transport).slot, message)
     _flush_remote_transport!(transport, task.task_number, time_ns())
     return nothing
 end
