@@ -554,7 +554,7 @@ end
             wait(manager_ch._listener_task)
         end
     finally
-        if isopen(task.channel)
+        if task.channel isa Channel && isopen(task.channel)
             close(task.channel)
         end
         Database.close_db!(manager_ch.db_handle)
