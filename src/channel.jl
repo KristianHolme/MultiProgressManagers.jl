@@ -133,6 +133,10 @@ function _listener_loop(manager::ProgressManager, sink::LocalProgressChannel)
                 break
             end
         end
+    catch e
+        if !(e isa InvalidStateException) || e.state !== :closed
+            rethrow(e)
+        end
     finally
         if isopen(sink)
             close(sink)

@@ -214,8 +214,8 @@ end
 end
 
 @testset "Dashboard: mock inputs and headless rendering" begin
-    test_db = tempname() * ".db"
-    log_dir = dirname(test_db)
+    log_dir = mktempdir()
+    test_db = joinpath(log_dir, "dash.db")
     manager = MPM.ProgressManager("DashMock", 3; db_path = test_db)
     try
         MPM.update!(manager, 1; step = 2, total_steps = 5, message = "epoch 2")
@@ -276,7 +276,7 @@ end
         @test _buffer_contains(backend, "epoch 2")
     finally
         Database.close_db!(manager.db_handle)
-        rm(test_db, force = true)
+        rm(log_dir; force = true, recursive = true)
     end
 end
 
