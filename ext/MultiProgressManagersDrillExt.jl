@@ -18,9 +18,7 @@ function Drill.on_training_start(callback::DrillWorkerProgressCallback, locals::
     @assert total_steps % n_envs == 0 "total_steps must be divisible by number of environments"
     callback._total_steps = total_steps
     callback._current_step = 0
-    task_number = callback.task.task_number
-    msg = ProgressUpdate(task_number, 0, total_steps, "Worker $(task_number)")
-    put!(callback.task.channel, msg)
+    MultiProgressManagers.update!(callback.task; step = 0, total_steps = total_steps, message = "Worker $(callback.task.task_number)")
     return true
 end
 
@@ -28,15 +26,16 @@ function Drill.on_step(callback::DrillWorkerProgressCallback, locals::Dict)
     env = locals[:env]
     n_envs = Drill.number_of_envs(env)
     callback._current_step += n_envs
-    task_number = callback.task.task_number
-    total_steps = callback._total_steps
-    msg = ProgressUpdate(task_number, callback._current_step, total_steps, "")
-    put!(callback.task.channel, msg)
+    MultiProgressManagers.update!(
+        callback.task;
+        step = callback._current_step,
+        total_steps = callback._total_steps,
+    )
     return true
 end
 
 function Drill.on_training_end(callback::DrillWorkerProgressCallback, locals::Dict)
-    put!(callback.task.channel, TaskFinished(callback.task.task_number))
+    MultiProgressManagers.finish!(callback.task)
     return true
 end
 
