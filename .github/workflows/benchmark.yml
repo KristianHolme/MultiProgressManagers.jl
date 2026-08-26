@@ -1,7 +1,15 @@
 name: Benchmark this PR
 on:
+  # `pull_request` (not `pull_request_target`) so this workflow file from the
+  # PR branch is what runs. Same-repo PRs can still post comments with the
+  # `pull-requests: write` permission below. Fork PRs would need
+  # `pull_request_target` because `GITHUB_TOKEN` is read-only for those events.
   pull_request:
     branches: [master]
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   bench:
@@ -11,9 +19,10 @@ jobs:
       - uses: MilesCranmer/AirspeedVelocity.jl@action-v1
         with:
           julia-version: "1.12"
-          job-summary: "true"
+          # Default `job-summary: false` posts a PR comment via
+          # peter-evans/create-or-update-comment. Setting it to true would
+          # write only to the Actions job summary instead.
           exeflags: "--threads=auto"
-          # Freeze the PR's suite so this workflow works before
-          # `benchmark/benchmarks.jl` exists on master, and so script
-          # changes are compared apples-to-apples across revisions.
+          # Freeze the PR's suite so script changes are compared
+          # apples-to-apples across revisions.
           bench-on: ${{ github.event.pull_request.head.sha }}
