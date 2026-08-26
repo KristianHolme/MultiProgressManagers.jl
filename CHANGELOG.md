@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.3]
 
 - Document coalesced local/remote `ProgressTask` updates in the README after the recent performance work, and fix the same-process Quick Start example.
 
