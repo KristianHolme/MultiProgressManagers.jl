@@ -22,6 +22,10 @@ const SPIN_STEPS = 100
 const SPIN_CALLERS = (1, 4, 8, 16, 24)
 const ULTRAFAST_STEPS = 10_000
 
+@noinline function _sink(::Int)
+    return nothing
+end
+
 function wait_ns(duration_ns::UInt64)
     t0 = time_ns()
     while (time_ns() - t0) < duration_ns
@@ -41,11 +45,18 @@ function run_steps!(n_steps::Int, spin_ns::UInt64, task::ProgressTask)
 end
 
 function run_steps!(n_steps::Int, spin_ns::UInt64, ::Nothing)
-    for _ in 1:n_steps
+    for step in 1:n_steps
         if spin_ns > 0
             wait_ns(spin_ns)
         end
+        _sink(step)
     end
+    return nothing
+end
+
+function run_ultrafast_mpm!(state)
+    run_steps!(ULTRAFAST_STEPS, zero(UInt64), only(state.tasks))
+    wait_for_listener(state.manager)
     return nothing
 end
 
@@ -143,7 +154,7 @@ function create_benchmark()
     end
 
     suite["ultrafast"]["mpm"] = @benchmarkable(
-        run_steps!($ULTRAFAST_STEPS, zero(UInt64), only(state.tasks)),
+        run_ultrafast_mpm!(state),
         setup = (state = setup_experiment(1)),
         teardown = (teardown_experiment(state)),
         evals = 1,
