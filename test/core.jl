@@ -422,6 +422,59 @@ end
     end
 end
 
+@testset "Listener coalesces updates and keeps last non-empty message" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("CoalesceTest", 2; db_path = test_db)
+    local_tasks = [MPM.get_task(manager, task_number, :local) for task_number in 1:2]
+    updates_per_task = 80
+    try
+        handles = Vector{Task}(undef, 2)
+        for task_number in 1:2
+            let task = local_tasks[task_number]
+                handles[task_number] = Threads.@spawn begin
+                    for step in 1:updates_per_task
+                        if step == 10
+                            MPM.update!(
+                                task;
+                                step = step,
+                                total_steps = updates_per_task,
+                                message = "keep-task-$(task_number)",
+                            )
+                        else
+                            MPM.update!(task; step = step, total_steps = updates_per_task)
+                        end
+                    end
+                    MPM.finish!(task)
+                end
+            end
+        end
+        for handle in handles
+            wait(handle)
+        end
+
+        completed_tasks = _wait_for_task_completion(manager; timeout_seconds = 15.0)
+        @test nrow(completed_tasks) == 2
+        @test all(row -> String(row.status) == "completed", eachrow(completed_tasks))
+        @test all(row -> row.current_step == updates_per_task, eachrow(completed_tasks))
+        @test all(row -> row.total_steps == updates_per_task, eachrow(completed_tasks))
+        @test coalesce(completed_tasks[1, :display_message], "") == "keep-task-1"
+        @test coalesce(completed_tasks[2, :display_message], "") == "keep-task-2"
+
+        if manager._listener_task !== nothing
+            wait(manager._listener_task)
+        end
+    finally
+        if !isempty(local_tasks)
+            shared_channel = local_tasks[1].channel
+            if shared_channel isa Channel{MPM.ProgressMessage} && isopen(shared_channel)
+                close(shared_channel)
+            end
+        end
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
 @testset "update! and display_message" begin
     test_db = tempname() * ".db"
     manager = MPM.ProgressManager("MessageTest", 2; db_path = test_db)

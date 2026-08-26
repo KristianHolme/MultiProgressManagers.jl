@@ -27,6 +27,31 @@ struct TaskSnapshot
 end
 
 """
+    TaskWrite
+
+A staged task-row write. The listener coalesces many progress messages into one
+of these per dirty task, then flushes them in a single SQLite transaction.
+"""
+struct TaskWrite
+    task_id::String
+    current_step::Int
+    total_steps::Int
+    status::String
+    message::Union{String, Nothing}
+    last_updated::Float64
+end
+
+const UPDATE_TASK_SQL = """
+    UPDATE tasks
+    SET total_steps = ?,
+        current_step = ?,
+        status = ?,
+        last_updated = ?,
+        display_message = COALESCE(?, display_message)
+    WHERE id = ?
+    """
+
+"""
     DBHandle
 
 A handle to a SQLite database that opens the connection lazily.
@@ -49,6 +74,7 @@ function _open_new_db(path::String)
         DBInterface.execute(db, "PRAGMA journal_mode = WAL;")
     end
     DBInterface.execute(db, "PRAGMA synchronous = NORMAL;")
+    DBInterface.execute(db, "PRAGMA temp_store = MEMORY;")
     _init_schema!(db)
     return db
 end
@@ -438,29 +464,76 @@ function create_task(
     return task_id
 end
 
-"""
-    update_task!(handle::DBHandle, task_id::String, current_step::Int;
-                 total_steps::Union{Int,Nothing}=nothing,
-                 status::Union{String,Nothing}=nothing,
-                 message::Union{String,Nothing}=nothing)
+function _task_write_params(write::TaskWrite)
+    return (
+        write.total_steps,
+        write.current_step,
+        write.status,
+        write.last_updated,
+        write.message,
+        write.task_id,
+    )
+end
 
-Update task progress, timestamps, and optional display message.
+function _execute_task_write!(db::SQLite.DB, write::TaskWrite)
+    DBInterface.execute(db, UPDATE_TASK_SQL, _task_write_params(write))
+    return nothing
+end
+
 """
-function update_task!(
-    handle::DBHandle,
-    task_id::String,
-    current_step::Int;
-    total_steps::Union{Int,Nothing} = nothing,
-    status::Union{Symbol,AbstractString,Nothing} = nothing,
-    message::Union{String,Nothing} = nothing
-)
+    apply_task_writes!(handle::DBHandle, writes::Vector{TaskWrite})
+
+Persist one or more staged task writes. A single write uses SQLite autocommit;
+two or more writes share one `BEGIN IMMEDIATE` transaction.
+"""
+function apply_task_writes!(handle::DBHandle, writes::Vector{TaskWrite})
+    if isempty(writes)
+        return nothing
+    end
+
     db = ensure_open!(handle)
-    last_updated = _current_timestamp()
+    if length(writes) == 1
+        with_retry() do
+            _execute_task_write!(db, writes[1])
+            return nothing
+        end
+        return nothing
+    end
+
+    with_retry() do
+        DBInterface.execute(db, "BEGIN IMMEDIATE")
+        try
+            for write in writes
+                _execute_task_write!(db, write)
+            end
+            DBInterface.execute(db, "COMMIT")
+        catch
+            try
+                DBInterface.execute(db, "ROLLBACK")
+            catch
+            end
+            rethrow()
+        end
+        return nothing
+    end
+    return nothing
+end
+
+function _resolve_update_fields(
+        db::SQLite.DB,
+        task_id::String,
+        current_step::Int,
+        total_steps::Union{Int, Nothing},
+        status::Union{Symbol, AbstractString, Nothing},
+    )
+    if total_steps !== nothing && status !== nothing
+        return (total_steps, _status_string(status))
+    end
 
     task_row = _execute_first_row(
         db,
         "SELECT total_steps FROM tasks WHERE id = ?",
-        [task_id]
+        [task_id],
     )
     if task_row === nothing
         error("Task not found: $task_id")
@@ -474,23 +547,40 @@ function update_task!(
     else
         "running"
     end
+    return (effective_total, next_status)
+end
 
-    with_retry() do
-        DBInterface.execute(
-            db,
-            """
-            UPDATE tasks
-            SET total_steps = COALESCE(?, total_steps),
-                current_step = ?,
-                status = ?,
-                last_updated = ?,
-                display_message = COALESCE(?, display_message)
-            WHERE id = ?
-            """,
-            [total_steps, current_step, next_status, last_updated, message, task_id]
-        )
-    end
+"""
+    update_task!(handle::DBHandle, task_id::String, current_step::Int;
+                 total_steps::Union{Int,Nothing}=nothing,
+                 status::Union{String,Nothing}=nothing,
+                 message::Union{String,Nothing}=nothing)
 
+Update task progress, timestamps, and optional display message.
+"""
+function update_task!(
+        handle::DBHandle,
+        task_id::String,
+        current_step::Int;
+        total_steps::Union{Int, Nothing} = nothing,
+        status::Union{Symbol, AbstractString, Nothing} = nothing,
+        message::Union{String, Nothing} = nothing,
+    )
+    db = ensure_open!(handle)
+    last_updated = _current_timestamp()
+    effective_total, next_status = _resolve_update_fields(
+        db,
+        task_id,
+        current_step,
+        total_steps,
+        status,
+    )
+    apply_task_writes!(
+        handle,
+        TaskWrite[
+            TaskWrite(task_id, current_step, effective_total, next_status, message, last_updated),
+        ],
+    )
     return nothing
 end
 

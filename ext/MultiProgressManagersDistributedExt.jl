@@ -35,7 +35,12 @@ function _ensure_remote_channel!(manager::ProgressManager)
             () -> Channel{ProgressMessage}(MultiProgressManagers.DEFAULT_CHANNEL_CAPACITY),
             myid(),
         )
-        push!(manager._pump_tasks, @async MultiProgressManagers._pump_loop(remote_channel, sink))
+        push!(
+            manager._pump_tasks,
+            MultiProgressManagers._spawn_background() do
+                return MultiProgressManagers._pump_loop(remote_channel, sink)
+            end,
+        )
         return _set_remote_channel!(manager, remote_channel)
     end
 end
