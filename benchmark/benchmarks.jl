@@ -22,7 +22,10 @@ const SPIN_STEPS = 100
 const SPIN_CALLERS = (1, 4, 8, 16, 24)
 const ULTRAFAST_STEPS = 10_000
 
-@noinline function _sink(::Int)
+const _SINK = Ref{Int}(0)
+
+@noinline function _sink(step::Int)
+    _SINK[] = step
     return nothing
 end
 
