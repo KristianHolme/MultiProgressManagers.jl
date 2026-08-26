@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Document coalesced local/remote `ProgressTask` updates in the README after the recent performance work, and fix the same-process Quick Start example.
+
 - [#44](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/44) Speed up worker progress reporting: coalesce queued task updates on the master, write local tasks directly to the listener sink, run the listener on the interactive threadpool, serialize SQLite access on each handle, and skip the extra per-update `SELECT` on the write path.
 
 - Keep local `update!` off the shared channel: in-process tasks write a per-task overwrite-latest slot, the poller copies dirty slots and flushes SQLite, and remote workers still pump `RemoteChannel` messages into the same slots.
