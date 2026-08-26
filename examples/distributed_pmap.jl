@@ -56,7 +56,7 @@ function main()
     manager = ProgressManager(
         "Distributed pmap Demo",
         num_tasks;
-        description = "Tasks run on worker processes via pmap; progress via RemoteChannel",
+        description = "Tasks run on worker processes via pmap; progress via coalesced RemoteChannel",
         db_path = db_path,
         task_descriptions = task_descriptions,
     )

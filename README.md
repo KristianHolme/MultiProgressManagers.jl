@@ -8,7 +8,7 @@ A lightweight progress tracking system for parallel tasks. Implemented in pure J
 - **💾 SQLite Persistence**: Current state stored in SQLite
 - **🔄 Multi-Task Support**: Track parallel sub-tasks within a single experiment
 - **⚡ Simple API**: `update!`, `finish!`, `fail!`
-- **🔀 Distributed & Threads**: Single DB writer on the master; workers get a `ProgressTask` via `get_task(manager, id, :remote)` or `:local` and send updates over a channel
+- **🔀 Distributed & Threads**: Single DB writer on the master; local workers write a per-task slot, remote workers write a process-local slot and send coalesced updates over a `RemoteChannel`
 
 ## Demo
 
@@ -67,7 +67,7 @@ finish!(manager)
 
 ### Worker-based progress (threads or Distributed)
 
-When work runs on other threads or processes, only the master touches the DB. Workers get a **ProgressTask** and send updates over a channel. Load `Distributed` before requesting `:remote` tasks so the remote-worker extension is available:
+When work runs on other threads or processes, only the master touches the DB. Workers get a **ProgressTask**. Local tasks (`:local`) write an overwrite-latest slot in-process. Remote tasks (`:remote`) write a process-local slot and send the latest state over a `RemoteChannel` at most every 10 ms (and always on `finish!` / `fail!`). Load `Distributed` before requesting `:remote` tasks so the remote-worker extension is available:
 
 ```julia
 using MultiProgressManagers
@@ -190,8 +190,8 @@ get_task(manager::ProgressManager, task_number::Int, type = :local) -> ProgressT
 
 Returns a handle for one task. `type`:
 
-- `:local` — plain `Channel` (same process,e.g. `@spawn` or `@threads`)
-- `:remote` — `RemoteChannel` (for `Distributed` / `pmap`)
+- `:local` — per-task overwrite-latest slot (same process, e.g. `@spawn` or `@threads`)
+- `:remote` — process-local overwrite-latest slot in front of a `RemoteChannel` (for `Distributed` / `pmap`)
 
 ```julia
 update!(task::ProgressTask;
@@ -203,7 +203,7 @@ finish!(task::ProgressTask)
 fail!(task::ProgressTask; message::String = "Task failed")
 ```
 
-Workers call `update!` during the loop and `finish!(task)` when the task is done. A listener on the master process applies these to the DB. As with manager-side `update!`, `total_steps` only needs to be supplied when it changes or is first established.
+Workers call `update!` during the loop and `finish!(task)` when the task is done. A poller on the master process persists the latest per-task state to the DB. As with manager-side `update!`, `total_steps` only needs to be supplied when it changes or is first established.
 
 ### Drill training integration
 

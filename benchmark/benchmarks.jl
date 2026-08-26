@@ -7,6 +7,9 @@
 # `ultrafast` is the same progress-reporting loop with a single caller and no
 # spin, so it measures `update!` / listener overhead instead of compute.
 #
+# `remote_ultrafast` is the `:remote` ProgressTask path (RemoteChannel +
+# Distributed extension) with the same no-spin loop.
+#
 # Run from the package root (needs several threads):
 #
 #   julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add("AirspeedVelocity"); Pkg.build("AirspeedVelocity")'
@@ -14,6 +17,7 @@
 #   benchpkg --exeflags="--threads=auto" --rev=master,dirty --bench-on=dirty
 
 using BenchmarkTools
+using Distributed
 using MultiProgressManagers
 using MultiProgressManagers.Database
 
@@ -96,7 +100,7 @@ function run_local_callers!(
     return nothing
 end
 
-function setup_experiment(n_callers::Int)
+function setup_experiment(n_callers::Int; task_type::Symbol = :local)
     db_path = tempname() * ".db"
     manager = ProgressManager(
         "asv_bench",
@@ -104,7 +108,7 @@ function setup_experiment(n_callers::Int)
         description = "AirspeedVelocity benchmark",
         db_path = db_path,
     )
-    tasks = [get_task(manager, i, :local) for i in 1:n_callers]
+    tasks = [get_task(manager, i, task_type) for i in 1:n_callers]
     return (; manager, tasks, db_path)
 end
 
@@ -165,6 +169,22 @@ function create_benchmark()
         seconds = 30
     )
     suite["ultrafast"]["baseline"] = @benchmarkable(
+        run_steps!($ULTRAFAST_STEPS, zero(UInt64), nothing),
+        evals = 1,
+        samples = 5,
+        seconds = 30
+    )
+
+    suite["remote_ultrafast"] = BenchmarkGroup()
+    suite["remote_ultrafast"]["mpm"] = @benchmarkable(
+        run_ultrafast_mpm!(state),
+        setup = (state = setup_experiment(1; task_type = :remote)),
+        teardown = (teardown_experiment(state)),
+        evals = 1,
+        samples = 5,
+        seconds = 30
+    )
+    suite["remote_ultrafast"]["baseline"] = @benchmarkable(
         run_steps!($ULTRAFAST_STEPS, zero(UInt64), nothing),
         evals = 1,
         samples = 5,

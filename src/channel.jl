@@ -1,10 +1,12 @@
 # ProgressTask API: get_task, update!, finish!, fail!
-# Local workers write overwrite-latest slots. Remote workers put on a RemoteChannel
-# and a pump copies those messages into the same slots. A poller flushes dirty
-# slots to SQLite on the interactive threadpool.
+# Local workers write overwrite-latest slots. Remote workers write a process-local
+# slot and rate-limit puts onto a RemoteChannel; a master pump copies those
+# messages into the same slots. A poller flushes dirty slots to SQLite on the
+# interactive threadpool.
 
 const DEFAULT_CHANNEL_CAPACITY = 4096
 const LISTENER_COALESCE_SECONDS = 0.01
+const REMOTE_FLUSH_INTERVAL_NS = UInt64(10_000_000)
 
 function _spawn_background(f::F) where {F}
     if Threads.nthreads(:interactive) > 0
@@ -99,6 +101,47 @@ function _publish_fail!(slot::LocalProgressSlot, message::String)
         unlock(slot.lock)
     end
     return nothing
+end
+
+function _flush_remote_transport!(
+        transport::RemoteProgressTransport,
+        task_number::Int,
+        now_ns::UInt64,
+    )
+    seq, current_step, total_steps, status, message = _copy_slot(transport.slot)
+    if seq == transport.last_flushed_seq
+        return nothing
+    end
+    transport.last_flushed_seq = seq
+    transport.last_flush_ns = now_ns
+    ch = transport.channel
+    if status == SLOT_FINISHED
+        put!(ch, ProgressUpdate(task_number, current_step, total_steps, message))
+        put!(ch, TaskFinished(task_number))
+    elseif status == SLOT_FAILED
+        put!(ch, ProgressUpdate(task_number, current_step, total_steps, message))
+        put!(ch, TaskFailed(task_number, message))
+    else
+        put!(ch, ProgressUpdate(task_number, current_step, total_steps, message))
+    end
+    return nothing
+end
+
+function _maybe_flush_remote!(transport::RemoteProgressTransport, task_number::Int)
+    now_ns = time_ns()
+    if now_ns - transport.last_flush_ns < REMOTE_FLUSH_INTERVAL_NS
+        return nothing
+    end
+    _flush_remote_transport!(transport, task_number, now_ns)
+    return nothing
+end
+
+function Base.isopen(transport::RemoteProgressTransport)
+    return isopen(transport.channel)
+end
+
+function Base.close(transport::RemoteProgressTransport)
+    return close(transport.channel)
 end
 
 function _apply_message_to_slot!(slots::Vector{LocalProgressSlot}, msg::ProgressUpdate)
@@ -236,10 +279,11 @@ Return a ProgressTask for the given task number. Workers use this handle to repo
 via `update!`, `finish!`, and `fail!`; the master runs a single poller that writes to the DB.
 
 - `type == :local`: uses a per-task overwrite-latest slot (same process, e.g. multithreading).
-- `type == :remote`: uses a `RemoteChannel` (for `Distributed` workers on other processes).
+- `type == :remote`: uses a process-local overwrite-latest slot in front of a `RemoteChannel`
+  (for `Distributed` workers on other processes). `update!` does not `put!` on every step.
 
 The first call for each type starts the poller if needed. Local tasks write slots directly.
-Remote tasks are pumped into the same slots. The poller coalesces to the latest per-task
+Remote tasks rate-limit IPC into the same slots. The poller coalesces to the latest per-task
 state and flushes dirty rows to SQLite.
 """
 function get_task(manager::ProgressManager, task_number::Int, type::Symbol = :local)
@@ -272,9 +316,10 @@ end
             total_steps::Union{Int,Nothing} = nothing,
             message::String="")
 
-Send a progress update for this task. Local tasks overwrite a per-task slot;
-remote tasks enqueue a message that the master pumps into the same slots.
-The poller writes the latest per-task state to the DB.
+Send a progress update for this task. Local and remote tasks overwrite a
+per-task slot. Remote tasks additionally send the latest state over a
+`RemoteChannel` at most every `LISTENER_COALESCE_SECONDS`. The poller writes
+the latest per-task state to the DB.
 """
 function update!(
         task::ProgressTask{LocalProgressSlot};
@@ -283,6 +328,18 @@ function update!(
         message::String = "",
     )
     _publish_update!(task.channel, step, total_steps, message)
+    return nothing
+end
+
+function update!(
+        task::ProgressTask{<:RemoteProgressTransport};
+        step::Union{Int, Nothing} = nothing,
+        total_steps::Union{Int, Nothing} = nothing,
+        message::String = "",
+    )
+    transport = task.channel
+    _publish_update!(transport.slot, step, total_steps, message)
+    _maybe_flush_remote!(transport, task.task_number)
     return nothing
 end
 
@@ -307,6 +364,13 @@ function finish!(task::ProgressTask{LocalProgressSlot})
     return nothing
 end
 
+function finish!(task::ProgressTask{<:RemoteProgressTransport})
+    transport = task.channel
+    _publish_finish!(transport.slot)
+    _flush_remote_transport!(transport, task.task_number, time_ns())
+    return nothing
+end
+
 function finish!(task::ProgressTask{C}) where {C}
     put!(task.channel, TaskFinished(task.task_number))
     return nothing
@@ -319,6 +383,13 @@ Signal that this task has failed. The master's poller will persist the failed st
 """
 function fail!(task::ProgressTask{LocalProgressSlot}; message::String = "Task failed")
     _publish_fail!(task.channel, message)
+    return nothing
+end
+
+function fail!(task::ProgressTask{<:RemoteProgressTransport}; message::String = "Task failed")
+    transport = task.channel
+    _publish_fail!(transport.slot, message)
+    _flush_remote_transport!(transport, task.task_number, time_ns())
     return nothing
 end
 

@@ -6,7 +6,9 @@
 
 - Keep local `update!` off the shared channel: in-process tasks write a per-task overwrite-latest slot, the poller copies dirty slots and flushes SQLite, and remote workers still pump `RemoteChannel` messages into the same slots.
 
-- Add AirspeedVelocity.jl benchmarks in `benchmark/` for local `Threads.@spawn` callers with a 3 ms busy-spin (`mpm` vs no-manager baseline) and a single ultrafast caller with no spin.
+- Keep remote `update!` off the per-step `RemoteChannel` path: Distributed workers write a process-local overwrite-latest slot and send at most one coalesced message every 10 ms (and always on `finish!` / `fail!`).
+
+- Add AirspeedVelocity.jl benchmarks in `benchmark/` for local `Threads.@spawn` callers with a 3 ms busy-spin (`mpm` vs no-manager baseline), a single ultrafast local caller with no spin, and a matching ultrafast `:remote` caller.
 
 - [#43](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/43) Speed up the Tachikoma dashboard poll loop: stop issuing unused per-experiment speed/sparkline/ETA queries, skip the extra running-experiments query, read task snapshots without allocating DataFrames, cache the local timezone, and render at 30 fps.
 
