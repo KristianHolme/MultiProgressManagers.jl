@@ -479,8 +479,9 @@ CREATE TABLE tasks (
 
 ### Environment notes
 
-- Julia is installed via `juliaup` (release channel, currently 1.12.5) at `~/.juliaup/bin`. Ensure `PATH` includes this directory.
-- The project requires Julia >= 1.12 (`julia = "1.12"` in `[compat]`).
+- The Cloud Agent install script installs `juliaup` if it is missing (`curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel 1.12`), pins channel `1.12`, and instantiates the package and `test/` deps.
+- Julia lives at `~/.juliaup/bin`. Shims are also linked into `/usr/local/bin` so non-login agent shells find `julia` without sourcing `.bashrc`.
+- The project requires Julia 1.12 (`julia = "1.12"` in `[compat]`).
 - `Tachikoma.jl` is a registered package in the General registry.
 - Tests use `ParallelTestRunner` and run 3 test files in parallel: `core.jl`, `aqua.jl`, `jet.jl`. All 24 tests should pass.
 - No linter is configured. JET.jl and Aqua.jl checks run as part of the test suite.
