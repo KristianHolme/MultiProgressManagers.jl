@@ -50,7 +50,7 @@ function get_remote_task(
     task_number::Int,
 )
     remote_channel = _ensure_remote_channel!(manager)
-    return ProgressTask(task_number, remote_channel)
+    return ProgressTask(task_number, MultiProgressManagers.RemoteProgressTransport(remote_channel))
 end
 
 end

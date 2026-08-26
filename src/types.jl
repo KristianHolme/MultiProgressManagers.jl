@@ -48,7 +48,30 @@ mutable struct LocalProgressSlot
     message::String
 end
 
-"""Handle for a single task; workers use this to report progress via the channel."""
+mutable struct RemoteWorkerState
+    slot::LocalProgressSlot
+    last_flushed_seq::UInt64
+    last_flush_ns::UInt64
+    flush_count::Int
+end
+
+"""
+    RemoteProgressTransport
+
+Handle for a `RemoteChannel` used by Distributed workers. `state` is created
+lazily on first `update!` in this process so a `SpinLock` is not sent over
+the wire with the task handle.
+"""
+mutable struct RemoteProgressTransport{C}
+    channel::C
+    state::Union{RemoteWorkerState, Nothing}
+end
+
+function RemoteProgressTransport(channel::C) where {C}
+    return RemoteProgressTransport{C}(channel, nothing)
+end
+
+"""Handle for a single task; workers use this to report progress."""
 struct ProgressTask{C}
     task_number::Int
     channel::C

@@ -3,6 +3,7 @@ using MultiProgressManagers
 using MultiProgressManagers.Database
 using DataFrames
 using DBInterface
+using Distributed
 
 const MPM = MultiProgressManagers
 const TK = MPM.Tachikoma
@@ -699,6 +700,7 @@ end
         end
         remote_task = MPM.get_task(manager, 1, :remote)
         @test remote_task isa MPM.ProgressTask
+        @test remote_task.channel isa MPM.RemoteProgressTransport
         @test occursin("RemoteChannel", string(typeof(remote_task.channel)))
 
         total_steps = 4
@@ -718,6 +720,88 @@ end
         @test completed_tasks[1, :current_step] == total_steps
         @test completed_tasks[1, :total_steps] == total_steps
         @test occursin("remote", String(completed_tasks[1, :display_message]))
+
+        if manager._listener_task !== nothing
+            wait(manager._listener_task)
+        end
+    finally
+        if remote_task !== nothing && isopen(remote_task.channel)
+            close(remote_task.channel)
+        end
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "Remote ProgressTask coalesces rapid updates" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("RemoteCoalesceTest", 1; db_path = test_db)
+    remote_task = nothing
+    try
+        remote_ext = Base.get_extension(MPM, :MultiProgressManagersDistributedExt)
+        if remote_ext === nothing
+            return
+        end
+        remote_task = MPM.get_task(manager, 1, :remote)
+        total_steps = 10_000
+        t0 = time_ns()
+        for step in 1:total_steps
+            MPM.update!(
+                remote_task;
+                step = step,
+                total_steps = total_steps,
+                message = "remote $(step)",
+            )
+        end
+        elapsed_ns = time_ns() - t0
+        flushed_before_finish = MPM._remote_state!(remote_task.channel).flush_count
+        MPM.finish!(remote_task)
+
+        completed_tasks = _wait_for_task_completion(manager; timeout_seconds = 15.0)
+        @test nrow(completed_tasks) == 1
+        @test String(completed_tasks[1, :status]) == "completed"
+        @test completed_tasks[1, :current_step] == total_steps
+        @test completed_tasks[1, :total_steps] == total_steps
+        @test occursin("remote", String(completed_tasks[1, :display_message]))
+        @test 0 < flushed_before_finish < total_steps
+        @test elapsed_ns / total_steps < 50_000
+
+        if manager._listener_task !== nothing
+            wait(manager._listener_task)
+        end
+    finally
+        if remote_task !== nothing && isopen(remote_task.channel)
+            close(remote_task.channel)
+        end
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+end
+
+@testset "Remote ProgressTask fail!" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("RemoteFailTest", 1; db_path = test_db)
+    remote_task = nothing
+    try
+        remote_ext = Base.get_extension(MPM, :MultiProgressManagersDistributedExt)
+        if remote_ext === nothing
+            return
+        end
+        remote_task = MPM.get_task(manager, 1, :remote)
+        MPM.update!(remote_task; step = 1, total_steps = 4, message = "working")
+        MPM.fail!(remote_task; message = "remote fail")
+
+        deadline = time() + 15.0
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        while time() < deadline
+            tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+            if nrow(tasks) == 1 && String(tasks[1, :status]) == "failed"
+                break
+            end
+            sleep(0.01)
+        end
+        @test String(tasks[1, :status]) == "failed"
+        @test occursin("remote fail", String(tasks[1, :display_message]))
 
         if manager._listener_task !== nothing
             wait(manager._listener_task)

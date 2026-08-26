@@ -6,7 +6,9 @@
 
 - Keep local `update!` off the shared channel: in-process tasks write a per-task overwrite-latest slot, the poller copies dirty slots and flushes SQLite, and remote workers still pump `RemoteChannel` messages into the same slots.
 
-- Add AirspeedVelocity.jl benchmarks in `benchmark/` for local `Threads.@spawn` callers with a 3 ms busy-spin (`mpm` vs no-manager baseline) and a single ultrafast caller with no spin.
+- Keep remote `update!` off the per-step `RemoteChannel` path: Distributed workers write a process-local overwrite-latest slot and send at most one coalesced message every 10 ms (and always on `finish!` / `fail!`).
+
+- Add AirspeedVelocity.jl benchmarks in `benchmark/` for local `Threads.@spawn` callers with a 3 ms busy-spin (`mpm` vs no-manager baseline), a single ultrafast local caller with no spin, an ultrafast Distributed `:remote` worker, and a matching remote busy-spin suite (`addprocs` workers, 1 and 4 callers).
 
 - Post AirspeedVelocity benchmark results as a pull request comment (`pull-requests: write`) instead of only the Actions job summary.
 

@@ -7,7 +7,7 @@ MultiProgressManagers.jl is a Julia package for tracking and visualizing progres
 1. **Progress Tracking API** - Simple interface for recording progress updates (in-process: `update!`, `finish!`, `fail!`; workers: `ProgressTask` + `update!`, `finish!`, `fail!`)
 2. **SQLite Persistence** - All progress history stored in SQLite databases
 3. **Tachikoma Dashboard** - Real-time terminal UI for monitoring experiments
-4. **Distributed Support** - Single DB writer on the master; workers get a `ProgressTask` via `get_task(manager, id, :remote)` and send updates over a channel; listener on master applies them to the DB
+4. **Distributed Support** - Single DB writer on the master; workers get a `ProgressTask` via `get_task(manager, id, :remote)` or `:local`. Local tasks write a per-task slot; remote tasks write a process-local slot and send coalesced `RemoteChannel` messages. The master's poller persists dirty slots.
 
 ## Architecture
 
@@ -252,16 +252,16 @@ top, bottom = split_layout(left_layout, left)
 
 ## MultiProgressManager-Specific Patterns
 
-### ProgressTask and Channel-Based Workers (Single DB Writer)
+### ProgressTask Workers (Single DB Writer)
 
-The **master process** is the only one that touches the DB. Workers (threads or separate processes) never call manager-side `update!` or open the database; they receive a **ProgressTask** and send progress over a channel. A single **listener** task on the master reads from a sink channel (fed by pump tasks from local/remote channels) and calls `update!` / `finish!` / `fail!` on the `ProgressManager`.
+The **master process** is the only one that touches the DB. Workers (threads or separate processes) never call manager-side `update!` or open the database; they receive a **ProgressTask**. A poller on the master copies dirty per-task slots and writes SQLite.
 
 - **Get a task handle:** `task = get_task(manager, task_number, type=:local)` or `get_task(manager, task_number, :remote)`.
-  - `:local` uses a plain `Channel` (same process, e.g. `@spawn`).
-  - `:remote` uses a `RemoteChannel` (for `Distributed` / `pmap`).
-- **From the worker:** `update!(task; step = current_step, total_steps = ..., message = "...")`, `finish!(task)`, and `fail!(task; message = "...")`. These only `put!` into the task's channel.
-- **Message types:** `ProgressUpdate(task_number, current_step, total_steps, message)`, `TaskFinished(task_number)`, and `TaskFailed(task_number, message)`; the listener dispatches on these and updates the DB.
-- **Implementation:** `channel.jl` defines `_current_slot`, `_ensure_channels_vector!`, `_get_or_create!` (dispatched on slot type for JET), and the listener/pump loops. ProgressManager stores `_channels`, `_sink`, `_listener_task`, `_pump_tasks`, and `_channel_lock`.
+  - `:local` uses a per-task overwrite-latest `LocalProgressSlot` (same process, e.g. `@spawn`).
+  - `:remote` uses a process-local overwrite-latest slot in front of a `RemoteChannel` (for `Distributed` / `pmap`). `update!` does not `put!` on every step; IPC is rate-limited to 10 ms and always happens on `finish!` / `fail!`.
+- **From the worker:** `update!(task; step = current_step, total_steps = ..., message = "...")`, `finish!(task)`, and `fail!(task; message = "...")`.
+- **Message types:** `ProgressUpdate`, `TaskFinished`, and `TaskFailed` still travel over the remote `RemoteChannel`; the master pump applies them to the same slots the poller reads.
+- **Implementation:** `channel.jl` defines slot publish/copy, remote rate-limited flush, `_get_or_create_local!` (dispatched for JET), and the poller/pump loops. ProgressManager stores `_local_slots`, `_listener_task`, `_pump_tasks`, and `_channel_lock`.
 
 Example (Distributed): create `manager`, then `tasks = [get_task(manager, i, :remote) for i in 1:n]`, `pmap(i -> run_worker(tasks[i], ...), 1:n)`, then `finish!(manager)`. Worker: `run_worker(task, total_steps)` loops steps, calls `update!(task; step = step, ...)`, then `finish!(task)`.
 
@@ -346,7 +346,7 @@ When working on this codebase, focus on:
 3. **src/dashboard/update.jl** - Keyboard event handling
 4. **src/database.jl** - All SQLite operations, retry logic, and dispatch helpers (_get_db, _open_new_db, _close_db)
 5. **src/api.jl** - User-facing API (create_experiment, update!, finish!, fail!)
-6. **src/channel.jl** - ProgressTask API (`get_task`, `update!`, `finish!`, `fail!`), listener loop, pump tasks, `_current_slot` / `_get_or_create!` dispatch
+6. **src/channel.jl** - ProgressTask API (`get_task`, `update!`, `finish!`, `fail!`), local/remote slots, poller loop, remote pump
 
 ## Common Tasks
 
@@ -399,8 +399,8 @@ When working on this codebase, focus on:
 - All database fields can be Missing - handle with ismissing()
 - Dashboard polls database at configurable frequency (default 500ms)
 - Dashboard always uses folder mode (pass the directory that contains `.db` files)
-- **Single DB writer:** Only the process that owns the ProgressManager writes to the DB; workers use `ProgressTask` + `update!` / `finish!` / `fail!` and a channel-backed listener.
-- **JET-friendly patterns:** Union{Nothing, T} is handled via multiple dispatch (e.g. _get_db(::Nothing, path) vs _get_db(db::SQLite.DB, path), _current_slot(::Nothing, ...) vs _current_slot(channels::Vector{Any}, ...), _get_or_create!(..., ::Nothing) vs concrete channel type). Use return values of concrete type instead of mutable fields after assignment so the compiler/JET infers narrow types.
+- **Single DB writer:** Only the process that owns the ProgressManager writes to the DB; workers use `ProgressTask` + `update!` / `finish!` / `fail!`. Local tasks write slots directly; remote tasks rate-limit `RemoteChannel` puts into the same slots.
+- **JET-friendly patterns:** Union{Nothing, T} is handled via multiple dispatch (e.g. `_get_db(::Nothing, path)` vs `_get_db(db::SQLite.DB, path)`, `_get_or_create_local!(..., ::Nothing)` vs concrete slot vector). Use return values of concrete type instead of mutable fields after assignment so the compiler/JET infers narrow types.
 
 ## Simplified Database Schema (MWP)
 
