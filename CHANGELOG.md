@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- [#44](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/44) Speed up worker progress reporting: coalesce queued task updates on the master, write local tasks directly to the listener sink, run the listener on the interactive threadpool, serialize SQLite access on each handle, and skip the extra per-update `SELECT` on the write path.
+
+- Add AirspeedVelocity.jl benchmarks in `benchmark/` for local `Threads.@spawn` callers with a 3 ms busy-spin (`mpm` vs no-manager baseline) and a single ultrafast caller with no spin.
+
 - [#43](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/43) Speed up the Tachikoma dashboard poll loop: stop issuing unused per-experiment speed/sparkline/ETA queries, skip the extra running-experiments query, read task snapshots without allocating DataFrames, cache the local timezone, and render at 30 fps.
 
 ## [0.1.1]

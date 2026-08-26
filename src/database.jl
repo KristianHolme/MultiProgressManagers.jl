@@ -27,6 +27,31 @@ struct TaskSnapshot
 end
 
 """
+    TaskWrite
+
+A staged task-row write. The listener coalesces many progress messages into one
+of these per dirty task, then flushes them in a single SQLite transaction.
+"""
+struct TaskWrite
+    task_id::String
+    current_step::Int
+    total_steps::Int
+    status::String
+    message::Union{String, Nothing}
+    last_updated::Float64
+end
+
+const UPDATE_TASK_SQL = """
+    UPDATE tasks
+    SET total_steps = ?,
+        current_step = ?,
+        status = ?,
+        last_updated = ?,
+        display_message = COALESCE(?, display_message)
+    WHERE id = ?
+    """
+
+"""
     DBHandle
 
 A handle to a SQLite database that opens the connection lazily.
@@ -35,20 +60,30 @@ This prevents issues during module precompilation.
 mutable struct DBHandle
     db::Union{SQLite.DB,Nothing}
     path::String
+    _lock::ReentrantLock
 
     function DBHandle(path::String)
-        return new(nothing, path)
+        return new(nothing, path, ReentrantLock())
     end
 end
 
 function _open_new_db(path::String)
     is_new_database = !isfile(path) || filesize(path) == 0
+    if is_new_database
+        for suffix in ("-wal", "-shm")
+            sidecar = path * suffix
+            if isfile(sidecar)
+                rm(sidecar; force = true)
+            end
+        end
+    end
     db = SQLite.DB(path)
     DBInterface.execute(db, "PRAGMA busy_timeout = 5000;")
     if is_new_database
         DBInterface.execute(db, "PRAGMA journal_mode = WAL;")
     end
     DBInterface.execute(db, "PRAGMA synchronous = NORMAL;")
+    DBInterface.execute(db, "PRAGMA temp_store = MEMORY;")
     _init_schema!(db)
     return db
 end
@@ -75,9 +110,22 @@ Ensure the database handle is open, opening it if necessary.
 Initializes schema on first open. Enables WAL mode and sets busy timeout.
 """
 function ensure_open!(handle::DBHandle)
+    return lock(handle._lock) do
+        return _ensure_open_unlocked!(handle)
+    end
+end
+
+function _ensure_open_unlocked!(handle::DBHandle)
     db = _get_db(handle.db, handle.path)
     handle.db = db
     return db
+end
+
+function with_handle(f::F, handle::DBHandle) where {F}
+    return lock(handle._lock) do
+        db = _ensure_open_unlocked!(handle)
+        return f(db)
+    end
 end
 
 function _close_db(::Nothing)
@@ -98,8 +146,11 @@ end
 Close the database handle.
 """
 function close!(handle::DBHandle)
-    _close_db(handle.db)
-    handle.db = nothing
+    lock(handle._lock) do
+        _close_db(handle.db)
+        handle.db = nothing
+        return nothing
+    end
     return nothing
 end
 
@@ -438,29 +489,61 @@ function create_task(
     return task_id
 end
 
-"""
-    update_task!(handle::DBHandle, task_id::String, current_step::Int;
-                 total_steps::Union{Int,Nothing}=nothing,
-                 status::Union{String,Nothing}=nothing,
-                 message::Union{String,Nothing}=nothing)
+function _task_write_params(write::TaskWrite)
+    return (
+        write.total_steps,
+        write.current_step,
+        write.status,
+        write.last_updated,
+        write.message,
+        write.task_id,
+    )
+end
 
-Update task progress, timestamps, and optional display message.
+function _execute_task_write!(db::SQLite.DB, write::TaskWrite)
+    DBInterface.execute(db, UPDATE_TASK_SQL, _task_write_params(write))
+    return nothing
+end
+
 """
-function update_task!(
-    handle::DBHandle,
-    task_id::String,
-    current_step::Int;
-    total_steps::Union{Int,Nothing} = nothing,
-    status::Union{Symbol,AbstractString,Nothing} = nothing,
-    message::Union{String,Nothing} = nothing
-)
-    db = ensure_open!(handle)
-    last_updated = _current_timestamp()
+    apply_task_writes!(handle::DBHandle, writes::Vector{TaskWrite})
+
+Persist one or more staged task writes on a single connection.
+The listener coalesces many progress messages into one write per dirty task,
+so this is typically a handful of UPDATEs rather than one per step.
+"""
+function apply_task_writes!(handle::DBHandle, writes::Vector{TaskWrite})
+    if isempty(writes)
+        return nothing
+    end
+
+    with_retry() do
+        with_handle(handle) do db
+            for write in writes
+                _execute_task_write!(db, write)
+            end
+            return nothing
+        end
+        return nothing
+    end
+    return nothing
+end
+
+function _resolve_update_fields(
+        db::SQLite.DB,
+        task_id::String,
+        current_step::Int,
+        total_steps::Union{Int, Nothing},
+        status::Union{Symbol, AbstractString, Nothing},
+    )
+    if total_steps !== nothing && status !== nothing
+        return (total_steps, _status_string(status))
+    end
 
     task_row = _execute_first_row(
         db,
         "SELECT total_steps FROM tasks WHERE id = ?",
-        [task_id]
+        [task_id],
     )
     if task_row === nothing
         error("Task not found: $task_id")
@@ -474,23 +557,41 @@ function update_task!(
     else
         "running"
     end
+    return (effective_total, next_status)
+end
 
-    with_retry() do
-        DBInterface.execute(
+"""
+    update_task!(handle::DBHandle, task_id::String, current_step::Int;
+                 total_steps::Union{Int,Nothing}=nothing,
+                 status::Union{String,Nothing}=nothing,
+                 message::Union{String,Nothing}=nothing)
+
+Update task progress, timestamps, and optional display message.
+"""
+function update_task!(
+        handle::DBHandle,
+        task_id::String,
+        current_step::Int;
+        total_steps::Union{Int, Nothing} = nothing,
+        status::Union{Symbol, AbstractString, Nothing} = nothing,
+        message::Union{String, Nothing} = nothing,
+    )
+    last_updated = _current_timestamp()
+    effective_total, next_status = with_handle(handle) do db
+        return _resolve_update_fields(
             db,
-            """
-            UPDATE tasks
-            SET total_steps = COALESCE(?, total_steps),
-                current_step = ?,
-                status = ?,
-                last_updated = ?,
-                display_message = COALESCE(?, display_message)
-            WHERE id = ?
-            """,
-            [total_steps, current_step, next_status, last_updated, message, task_id]
+            task_id,
+            current_step,
+            total_steps,
+            status,
         )
     end
-
+    apply_task_writes!(
+        handle,
+        TaskWrite[
+            TaskWrite(task_id, current_step, effective_total, next_status, message, last_updated),
+        ],
+    )
     return nothing
 end
 
@@ -500,18 +601,18 @@ end
 Return all tasks for an experiment.
 """
 function get_experiment_tasks(handle::DBHandle, experiment_id::String)
-    db = ensure_open!(handle)
-
     return with_retry() do
-        DBInterface.execute(
-            db,
-            """
-            SELECT * FROM tasks
-            WHERE experiment_id = ?
-            ORDER BY task_number
-            """,
-            [experiment_id]
-        ) |> DataFrame
+        return with_handle(handle) do db
+            return DBInterface.execute(
+                db,
+                """
+                SELECT * FROM tasks
+                WHERE experiment_id = ?
+                ORDER BY task_number
+                """,
+                [experiment_id]
+            ) |> DataFrame
+        end
     end
 end
 
@@ -529,37 +630,37 @@ _snapshot_str(value::AbstractString) = String(value)
 _snapshot_str(value) = String(value)
 
 function get_task_snapshots(handle::DBHandle, experiment_id::String)
-    db = ensure_open!(handle)
-
     return with_retry() do
-        snapshots = TaskSnapshot[]
-        cursor = DBInterface.execute(
-            db,
-            """
-            SELECT task_number, total_steps, current_step, status,
-                   started_at, last_updated, display_message, description
-            FROM tasks
-            WHERE experiment_id = ?
-            ORDER BY task_number
-            """,
-            [experiment_id]
-        )
-        for row in cursor
-            push!(
-                snapshots,
-                TaskSnapshot(
-                    _snapshot_int(row.task_number),
-                    _snapshot_int(row.total_steps),
-                    _snapshot_int(row.current_step),
-                    _status_symbol(row.status),
-                    _snapshot_float(row.started_at),
-                    _snapshot_float(row.last_updated),
-                    _snapshot_str(row.display_message),
-                    _snapshot_str(row.description),
-                ),
+        return with_handle(handle) do db
+            snapshots = TaskSnapshot[]
+            cursor = DBInterface.execute(
+                db,
+                """
+                SELECT task_number, total_steps, current_step, status,
+                       started_at, last_updated, display_message, description
+                FROM tasks
+                WHERE experiment_id = ?
+                ORDER BY task_number
+                """,
+                [experiment_id]
             )
+            for row in cursor
+                push!(
+                    snapshots,
+                    TaskSnapshot(
+                        _snapshot_int(row.task_number),
+                        _snapshot_int(row.total_steps),
+                        _snapshot_int(row.current_step),
+                        _status_symbol(row.status),
+                        _snapshot_float(row.started_at),
+                        _snapshot_float(row.last_updated),
+                        _snapshot_str(row.display_message),
+                        _snapshot_str(row.description),
+                    ),
+                )
+            end
+            return snapshots
         end
-        return snapshots
     end
 end
 
@@ -711,38 +812,41 @@ function finish_experiment!(
     experiment_id::String;
     message::String = "Completed successfully"
 )
-    db = ensure_open!(handle)
     finished_at = _current_timestamp()
 
     with_retry() do
-        DBInterface.execute(
-            db,
-            """
-            UPDATE experiments
-            SET status = 'completed', finished_at = ?, final_message = ?
-            WHERE id = ?
-            """,
-            [finished_at, message, experiment_id]
-        )
+        with_handle(handle) do db
+            DBInterface.execute(
+                db,
+                """
+                UPDATE experiments
+                SET status = 'completed', finished_at = ?, final_message = ?
+                WHERE id = ?
+                """,
+                [finished_at, message, experiment_id]
+            )
 
-        DBInterface.execute(
-            db,
-            """
-            UPDATE tasks
-            SET total_steps = CASE
-                    WHEN total_steps > current_step THEN total_steps
-                    ELSE current_step
-                END,
-                current_step = CASE
-                    WHEN total_steps > current_step THEN total_steps
-                    ELSE current_step
-                END,
-                status = 'completed',
-                last_updated = ?
-            WHERE experiment_id = ?
-            """,
-            [finished_at, experiment_id]
-        )
+            DBInterface.execute(
+                db,
+                """
+                UPDATE tasks
+                SET total_steps = CASE
+                        WHEN total_steps > current_step THEN total_steps
+                        ELSE current_step
+                    END,
+                    current_step = CASE
+                        WHEN total_steps > current_step THEN total_steps
+                        ELSE current_step
+                    END,
+                    status = 'completed',
+                    last_updated = ?
+                WHERE experiment_id = ?
+                """,
+                [finished_at, experiment_id]
+            )
+            return nothing
+        end
+        return nothing
     end
 
     return nothing
@@ -758,29 +862,32 @@ end
 Mark an experiment as failed.
 """
 function fail_experiment!(handle::DBHandle, experiment_id::String, error_message::String)
-    db = ensure_open!(handle)
     finished_at = _current_timestamp()
 
     with_retry() do
-        DBInterface.execute(
-            db,
-            """
-            UPDATE experiments
-            SET status = 'failed', finished_at = ?, final_message = ?
-            WHERE id = ?
-            """,
-            [finished_at, error_message, experiment_id]
-        )
+        with_handle(handle) do db
+            DBInterface.execute(
+                db,
+                """
+                UPDATE experiments
+                SET status = 'failed', finished_at = ?, final_message = ?
+                WHERE id = ?
+                """,
+                [finished_at, error_message, experiment_id]
+            )
 
-        DBInterface.execute(
-            db,
-            """
-            UPDATE tasks
-            SET status = 'failed', last_updated = ?
-            WHERE experiment_id = ?
-            """,
-            [finished_at, experiment_id]
-        )
+            DBInterface.execute(
+                db,
+                """
+                UPDATE tasks
+                SET status = 'failed', last_updated = ?
+                WHERE experiment_id = ?
+                """,
+                [finished_at, experiment_id]
+            )
+            return nothing
+        end
+        return nothing
     end
 
     return nothing
@@ -970,19 +1077,20 @@ API compatibility but currently falls back to the same average as
 `total_avg_speed`.
 """
 function calculate_speeds(handle::DBHandle, experiment_id::String; window_seconds::Real=30)
-    db = ensure_open!(handle)
     _ = window_seconds
 
     tasks = with_retry() do
-        DBInterface.execute(
-            db,
-            """
-            SELECT current_step, started_at, last_updated
-            FROM tasks
-            WHERE experiment_id = ?
-            """,
-            [experiment_id]
-        ) |> DataFrame
+        return with_handle(handle) do db
+            return DBInterface.execute(
+                db,
+                """
+                SELECT current_step, started_at, last_updated
+                FROM tasks
+                WHERE experiment_id = ?
+                """,
+                [experiment_id]
+            ) |> DataFrame
+        end
     end
 
     if isempty(tasks)

@@ -148,28 +148,17 @@ function _merged_current_step(ts::TaskStatus, step::Nothing)
     return ts.current_step
 end
 
-"""Update progress for a specific task within a multi-task experiment."""
-function update!(
+function _stage_update!(
         manager::ProgressManager,
         task_number::Int;
         step::Union{Int, Nothing} = nothing,
         total_steps::Union{Int, Nothing} = nothing,
-        message::String = "",
     )
     ts = manager.task_status[task_number]
     _validate_task_update!(ts, task_number, step, total_steps)
     new_step = _merged_current_step(ts, step)
     merged_total_steps = _merged_total_steps(ts, new_step, total_steps)
     new_status = ts.status == :completed ? :completed : :running
-    db_total_steps = total_steps === nothing ? nothing : merged_total_steps
-    Database.update_task!(
-        manager.db_handle,
-        ts.task_id,
-        new_step;
-        total_steps = db_total_steps,
-        status = new_status,
-        message = _message_or_nothing(message),
-    )
     manager.task_status[task_number] = _updated_task_status(
         ts;
         total_steps = merged_total_steps,
@@ -179,24 +168,62 @@ function update!(
     return nothing
 end
 
-
-"""Mark a specific task as completed."""
-function finish!(manager::ProgressManager, task_number::Int)
+function _stage_finish!(manager::ProgressManager, task_number::Int)
     ts = manager.task_status[task_number]
     completed_steps = max(ts.total_steps, ts.current_step)
-    Database.update_task!(
-        manager.db_handle,
-        ts.task_id,
-        completed_steps;
-        total_steps = completed_steps,
-        status = :completed,
-    )
     manager.task_status[task_number] = _updated_task_status(
         ts;
         total_steps = completed_steps,
         current_step = completed_steps,
         status = :completed,
     )
+    return nothing
+end
+
+function _stage_fail!(manager::ProgressManager, task_number::Int)
+    ts = manager.task_status[task_number]
+    manager.task_status[task_number] = _updated_task_status(
+        ts;
+        status = :failed,
+    )
+    return nothing
+end
+
+function _persist_task!(
+        manager::ProgressManager,
+        task_number::Int;
+        message::Union{String, Nothing} = nothing,
+    )
+    ts = manager.task_status[task_number]
+    Database.update_task!(
+        manager.db_handle,
+        ts.task_id,
+        ts.current_step;
+        total_steps = ts.total_steps,
+        status = ts.status,
+        message = message,
+    )
+    return nothing
+end
+
+"""Update progress for a specific task within a multi-task experiment."""
+function update!(
+        manager::ProgressManager,
+        task_number::Int;
+        step::Union{Int, Nothing} = nothing,
+        total_steps::Union{Int, Nothing} = nothing,
+        message::String = "",
+    )
+    _stage_update!(manager, task_number; step = step, total_steps = total_steps)
+    _persist_task!(manager, task_number; message = _message_or_nothing(message))
+    return nothing
+end
+
+
+"""Mark a specific task as completed."""
+function finish!(manager::ProgressManager, task_number::Int)
+    _stage_finish!(manager, task_number)
+    _persist_task!(manager, task_number)
     return nothing
 end
 
@@ -221,19 +248,8 @@ function fail!(
         task_number::Int;
         message::String = "Task failed",
     )
-    ts = manager.task_status[task_number]
-    Database.update_task!(
-        manager.db_handle,
-        ts.task_id,
-        ts.current_step;
-        total_steps = ts.total_steps,
-        status = :failed,
-        message = _message_or_nothing(message),
-    )
-    manager.task_status[task_number] = _updated_task_status(
-        ts;
-        status = :failed,
-    )
+    _stage_fail!(manager, task_number)
+    _persist_task!(manager, task_number; message = _message_or_nothing(message))
     return nothing
 end
 
