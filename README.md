@@ -8,7 +8,7 @@ A lightweight progress tracking system for parallel tasks. Implemented in pure J
 - **💾 SQLite Persistence**: Current state stored in SQLite
 - **🔄 Multi-Task Support**: Track parallel sub-tasks within a single experiment
 - **⚡ Simple API**: `update!`, `finish!`, `fail!`
-- **🔀 Distributed & Threads**: Single DB writer on the master; local workers write a per-task slot, remote workers write a process-local slot and send coalesced updates over a `RemoteChannel`
+- **🔀 Distributed & Threads**: Single DB writer on the master; local and remote workers overwrite a per-task slot so `update!(task)` does not stall compute. Remote IPC is coalesced (~10 ms) over a `RemoteChannel`
 
 ## Demo
 
@@ -41,19 +41,19 @@ You can also open the dashboard from Julia without the app: `view_dashboard(fold
 using MultiProgressManagers
 
 # Create a multi-task experiment with 5 parallel tasks
-N_tasks = 5
+N = 5
 parameter_values = rand(N)
 manager = ProgressManager(
     "Training Run", N;
     description = "Epoch 1-10 of ResNet training",
     db_path = "./progresslogs/experiment1.db",
-    task_description = ["parameter=$(val)" for val in parameter_values],
+    task_descriptions = ["parameter=$(val)" for val in parameter_values],
 )
 
 # Update progress for each task as it runs
 for (task_num, param_val) in enumerate(parameter_values)
     steps = rand([100, 200, 300])
-    update!(manager;total_steps = steps, message="Starting run with $steps steps")
+    update!(manager, task_num; total_steps = steps, message = "Starting run with $steps steps")
     for step in 1:steps
         do_work(task_num, param_val, step)
         update!(manager, task_num; step = step, message = "step $step")
@@ -67,7 +67,7 @@ finish!(manager)
 
 ### Worker-based progress (threads or Distributed)
 
-When work runs on other threads or processes, only the master touches the DB. Workers get a **ProgressTask**. Local tasks (`:local`) write an overwrite-latest slot in-process. Remote tasks (`:remote`) write a process-local slot and send the latest state over a `RemoteChannel` at most every 10 ms (and always on `finish!` / `fail!`). Load `Distributed` before requesting `:remote` tasks so the remote-worker extension is available:
+When work runs on other threads or processes, only the master touches the DB. Workers get a **ProgressTask** and can call `update!` every step without waiting on SQLite. Local tasks (`:local`) write an overwrite-latest slot in-process. Remote tasks (`:remote`) write a process-local slot and send the latest state over a `RemoteChannel` at most every 10 ms (and always on `finish!` / `fail!`). Load `Distributed` before requesting `:remote` tasks so the remote-worker extension is available:
 
 ```julia
 using MultiProgressManagers
@@ -170,7 +170,7 @@ update!(
 )
 ```
 
-Records progress for a specific task. Report progress by supplying `step`, Update total steps for the task by using `total_steps`. Update the current task message using `message`. The message is shown in the dashboard Details tab. When `total_steps` is omitted, the previously stored total is reused. Its recommended to update `total_steps` at the beginning of a task. If `total_steps` is not supplied, it is updated automatically as `step` is updated.
+Records progress for a specific task. Report progress by supplying `step`. Set total steps for the task with `total_steps`. Update the current task message with `message`. The message is shown in the dashboard Details tab. When `total_steps` is omitted, the previously stored total is reused. It is recommended to set `total_steps` at the beginning of a task. If `total_steps` is not supplied, it is updated automatically as `step` is updated. This path writes SQLite immediately; for hot loops on threads or Distributed workers, use a `ProgressTask` instead (see below).
 
 **Parameters:**
 
@@ -182,7 +182,7 @@ Records progress for a specific task. Report progress by supplying `step`, Updat
 
 ### ProgressTask: worker-based updates
 
-When work runs on other threads or processes, workers must not call `update!` or touch the DB. Instead they use a **ProgressTask**:
+When work runs on other threads or processes, workers must not call manager-side `update!` or touch the DB. Instead they use a **ProgressTask**:
 
 ```julia
 get_task(manager::ProgressManager, task_number::Int, type = :local) -> ProgressTask
@@ -195,15 +195,15 @@ Returns a handle for one task. `type`:
 
 ```julia
 update!(task::ProgressTask;
-    step::Union{Int,Nothing} = nothing
+    step::Union{Int,Nothing} = nothing,
     total_steps::Union{Int,Nothing} = nothing,
-    message::String = ""
+    message::String = "",
 )
 finish!(task::ProgressTask)
 fail!(task::ProgressTask; message::String = "Task failed")
 ```
 
-Workers call `update!` during the loop and `finish!(task)` when the task is done. A poller on the master process persists the latest per-task state to the DB. As with manager-side `update!`, `total_steps` only needs to be supplied when it changes or is first established.
+Workers call `update!` during the loop and `finish!(task)` when the task is done. Frequent `update!` calls are cheap: they overwrite a per-task slot and do not wait on SQLite. A poller on the master process persists the latest per-task state to the DB (about every 10 ms). As with manager-side `update!`, `total_steps` only needs to be supplied when it changes or is first established. An empty `message` does not replace the last non-empty message.
 
 ### Drill training integration
 
@@ -237,6 +237,20 @@ fail!(manager::ProgressManager; message::String = "Experiment failed")
 ```
 
 Mark either a specific task or the entire experiment as failed with a message. The code also provides overloads that take an `Exception` or a positional `error_message::String`; these ultimately set the same `message` used in the DB.
+
+## Progress reporting performance
+
+Same-process `update!(manager, task_number; ...)` writes SQLite on every call.
+
+`ProgressTask` updates are designed not to stall compute:
+
+- `:local` — `update!` only overwrites a per-task slot (typically around a microsecond). Callers never wait on SQLite or other workers.
+- `:remote` — `update!` overwrites a process-local slot and sends at most one `RemoteChannel` message every 10 ms, plus a flush on `finish!` / `fail!`.
+- The master poller copies dirty slots and writes the latest per-task state. Intermediate steps are not stored. An empty `message` does not replace the last non-empty message.
+
+Call `update!(task; ...)` as often as you like. For threads or Distributed workers, always use `get_task` instead of manager-side `update!`.
+
+See `benchmark/` for AirspeedVelocity suites that compare these paths against a no-manager baseline.
 
 ## Keyboard Shortcuts
 
