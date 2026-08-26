@@ -30,7 +30,7 @@ function _ensure_remote_channel!(manager::ProgressManager)
         if remote_channel !== nothing
             return remote_channel
         end
-        sink = MultiProgressManagers._start_listener_if_needed!(manager)
+        slots = MultiProgressManagers._start_listener_if_needed!(manager)
         remote_channel = RemoteChannel(
             () -> Channel{ProgressMessage}(MultiProgressManagers.DEFAULT_CHANNEL_CAPACITY),
             myid(),
@@ -38,7 +38,7 @@ function _ensure_remote_channel!(manager::ProgressManager)
         push!(
             manager._pump_tasks,
             MultiProgressManagers._spawn_background() do
-                return MultiProgressManagers._pump_loop(remote_channel, sink)
+                return MultiProgressManagers._pump_loop(remote_channel, slots)
             end,
         )
         return _set_remote_channel!(manager, remote_channel)

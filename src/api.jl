@@ -23,7 +23,6 @@ function _init_progress_manager(name::String, total_tasks::Int; description::Str
         handle,
         nothing,
         nothing,
-        nothing,
         Task[],
         Base.Threads.ReentrantLock(),
     )

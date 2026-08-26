@@ -1,6 +1,7 @@
-# ProgressTask channel API: get_task, update!, finish!, fail!
-# Local workers write directly to the sink. Remote workers pump into the same sink.
-# The listener coalesces pending messages per task and flushes them in one DB transaction.
+# ProgressTask API: get_task, update!, finish!, fail!
+# Local workers write overwrite-latest slots. Remote workers put on a RemoteChannel
+# and a pump copies those messages into the same slots. A poller flushes dirty
+# slots to SQLite on the interactive threadpool.
 
 const DEFAULT_CHANNEL_CAPACITY = 4096
 const LISTENER_COALESCE_SECONDS = 0.01
@@ -12,72 +13,139 @@ function _spawn_background(f::F) where {F}
     return Threads.@spawn f()
 end
 
+function _make_local_slots(manager::ProgressManager)
+    n = manager.total_tasks
+    slots = Vector{LocalProgressSlot}(undef, n)
+    for task_number in 1:n
+        ts = manager.task_status[task_number]
+        slots[task_number] = LocalProgressSlot(
+            Threads.SpinLock(),
+            ts.current_step,
+            ts.total_steps,
+            SLOT_ACTIVE,
+            UInt64(0),
+            "",
+        )
+    end
+    return slots
+end
+
 function _start_listener_if_needed!(manager::ProgressManager)
-    if manager._sink === nothing
-        sink = LocalProgressChannel(DEFAULT_CHANNEL_CAPACITY)
-        manager._sink = sink
-        manager._listener_task = _spawn_background() do
-            return _listener_loop(manager, sink)
+    return _get_or_create_local!(manager, manager._local_slots)
+end
+
+function _start_listener_from_empty!(manager::ProgressManager)
+    slots = _make_local_slots(manager)
+    manager._local_slots = slots
+    manager._listener_task = _spawn_background() do
+        return _listener_loop(manager, slots)
+    end
+    return slots
+end
+
+function _copy_slot(slot::LocalProgressSlot)
+    lock(slot.lock)
+    try
+        return (slot.seq, slot.current_step, slot.total_steps, slot.status, slot.message)
+    finally
+        unlock(slot.lock)
+    end
+end
+
+function _publish_update!(
+        slot::LocalProgressSlot,
+        step::Union{Int, Nothing},
+        total_steps::Union{Int, Nothing},
+        message::String,
+    )
+    lock(slot.lock)
+    try
+        if step isa Int
+            slot.current_step = step
         end
+        if total_steps isa Int
+            slot.total_steps = total_steps
+        end
+        if !isempty(message)
+            slot.message = message
+        end
+        slot.seq += UInt64(1)
+    finally
+        unlock(slot.lock)
     end
-
-    return manager._sink::LocalProgressChannel
+    return nothing
 end
 
-function _apply_channel_message!(
-        manager::ProgressManager,
-        dirty::Set{Int},
-        messages::Dict{Int, String},
-        msg::ProgressUpdate,
-    )
-    _stage_update!(
-        manager,
-        msg.task_number;
-        step = msg.current_step,
-        total_steps = msg.total_steps,
-    )
-    push!(dirty, msg.task_number)
-    if !isempty(msg.message)
-        messages[msg.task_number] = msg.message
+function _publish_finish!(slot::LocalProgressSlot)
+    lock(slot.lock)
+    try
+        slot.status = SLOT_FINISHED
+        slot.seq += UInt64(1)
+    finally
+        unlock(slot.lock)
     end
-    return false
+    return nothing
 end
 
-function _apply_channel_message!(
-        manager::ProgressManager,
-        dirty::Set{Int},
-        messages::Dict{Int, String},
-        msg::TaskFinished,
-    )
-    _stage_finish!(manager, msg.task_number)
-    push!(dirty, msg.task_number)
-    return true
-end
-
-function _apply_channel_message!(
-        manager::ProgressManager,
-        dirty::Set{Int},
-        messages::Dict{Int, String},
-        msg::TaskFailed,
-    )
-    _stage_fail!(manager, msg.task_number)
-    push!(dirty, msg.task_number)
-    if !isempty(msg.message)
-        messages[msg.task_number] = msg.message
+function _publish_fail!(slot::LocalProgressSlot, message::String)
+    lock(slot.lock)
+    try
+        slot.status = SLOT_FAILED
+        if !isempty(message)
+            slot.message = message
+        end
+        slot.seq += UInt64(1)
+    finally
+        unlock(slot.lock)
     end
-    return true
+    return nothing
 end
 
-function _drain_progress_channel!(
+function _apply_message_to_slot!(slots::Vector{LocalProgressSlot}, msg::ProgressUpdate)
+    _publish_update!(slots[msg.task_number], msg.current_step, msg.total_steps, msg.message)
+    return nothing
+end
+
+function _apply_message_to_slot!(slots::Vector{LocalProgressSlot}, msg::TaskFinished)
+    _publish_finish!(slots[msg.task_number])
+    return nothing
+end
+
+function _apply_message_to_slot!(slots::Vector{LocalProgressSlot}, msg::TaskFailed)
+    _publish_fail!(slots[msg.task_number], msg.message)
+    return nothing
+end
+
+function _poll_slots!(
         manager::ProgressManager,
-        sink::LocalProgressChannel,
+        slots::Vector{LocalProgressSlot},
+        last_seq::Vector{UInt64},
         dirty::Set{Int},
         messages::Dict{Int, String},
     )
     terminal_count = 0
-    while isready(sink)
-        if _apply_channel_message!(manager, dirty, messages, take!(sink))
+    n = length(slots)
+    for task_number in 1:n
+        seq, current_step, total_steps, status, message = _copy_slot(slots[task_number])
+        if status == SLOT_FINISHED || status == SLOT_FAILED
             terminal_count += 1
+        end
+        if seq == last_seq[task_number]
+            continue
+        end
+        last_seq[task_number] = seq
+        if status == SLOT_FINISHED
+            _stage_update!(manager, task_number; step = current_step, total_steps = total_steps)
+            _stage_finish!(manager, task_number)
+        elseif status == SLOT_FAILED
+            _stage_update!(manager, task_number; step = current_step, total_steps = total_steps)
+            _stage_fail!(manager, task_number)
+        else
+            _stage_update!(manager, task_number; step = current_step, total_steps = total_steps)
+        end
+        push!(dirty, task_number)
+        if !isempty(message)
+            messages[task_number] = message
         end
     end
     return terminal_count
@@ -113,43 +181,31 @@ function _flush_dirty_tasks!(
     return nothing
 end
 
-function _listener_loop(manager::ProgressManager, sink::LocalProgressChannel)
-    terminal_count = 0
+function _listener_loop(manager::ProgressManager, slots::Vector{LocalProgressSlot})
+    last_seq = zeros(UInt64, length(slots))
     try
         while true
             dirty = Set{Int}()
             messages = Dict{Int, String}()
-            first_msg = take!(sink)
-            if _apply_channel_message!(manager, dirty, messages, first_msg)
-                terminal_count += 1
-            end
-            terminal_count += _drain_progress_channel!(manager, sink, dirty, messages)
-            if terminal_count < manager.total_tasks
-                sleep(LISTENER_COALESCE_SECONDS)
-                terminal_count += _drain_progress_channel!(manager, sink, dirty, messages)
-            end
+            terminal_count = _poll_slots!(manager, slots, last_seq, dirty, messages)
             _flush_dirty_tasks!(manager, dirty, messages)
             if terminal_count >= manager.total_tasks
                 break
             end
+            sleep(LISTENER_COALESCE_SECONDS)
         end
     catch e
         if !(e isa InvalidStateException) || e.state !== :closed
             rethrow(e)
         end
-    finally
-        if isopen(sink)
-            close(sink)
-        end
     end
     return nothing
 end
 
-function _pump_loop(source, sink::LocalProgressChannel)
+function _pump_loop(source, slots::Vector{LocalProgressSlot})
     try
         while true
-            msg = take!(source)
-            put!(sink, msg)
+            _apply_message_to_slot!(slots, take!(source))
         end
     catch e
         if !(e isa InvalidStateException) || e.state !== :closed
@@ -159,42 +215,43 @@ function _pump_loop(source, sink::LocalProgressChannel)
     return nothing
 end
 
-function _ensure_local_channel!(manager::ProgressManager)
+function _ensure_local_slots!(manager::ProgressManager)
     return lock(manager._channel_lock) do
-        _get_or_create_local!(manager, manager._local_channel)
+        return _get_or_create_local!(manager, manager._local_slots)
     end
 end
 
 function _get_or_create_local!(manager::ProgressManager, ::Nothing)
-    ch = _start_listener_if_needed!(manager)
-    manager._local_channel = ch
-    return ch
+    return _start_listener_from_empty!(manager)
 end
 
-function _get_or_create_local!(manager::ProgressManager, ch::LocalProgressChannel)
-    return ch
+function _get_or_create_local!(manager::ProgressManager, slots::Vector{LocalProgressSlot})
+    return slots
 end
 
 """
     get_task(manager::ProgressManager, task_number::Int, type=:local) -> ProgressTask
 
 Return a ProgressTask for the given task number. Workers use this handle to report progress
-via `update!`, `finish!`, and `fail!`; the master runs a single listener that writes to the DB.
+via `update!`, `finish!`, and `fail!`; the master runs a single poller that writes to the DB.
 
-- `type == :local`: uses a plain `Channel` (same process, e.g. multithreading).
+- `type == :local`: uses a per-task overwrite-latest slot (same process, e.g. multithreading).
 - `type == :remote`: uses a `RemoteChannel` (for `Distributed` workers on other processes).
 
-The first call for each type creates the channel and starts the listener/pump if needed.
-Local tasks write directly to the listener sink. Remote tasks are pumped into the same sink.
-The listener coalesces queued updates per task and flushes them in one SQLite transaction.
+The first call for each type starts the poller if needed. Local tasks write slots directly.
+Remote tasks are pumped into the same slots. The poller coalesces to the latest per-task
+state and flushes dirty rows to SQLite.
 """
 function get_task(manager::ProgressManager, task_number::Int, type::Symbol = :local)
     if type !== :local && type !== :remote
         throw(ArgumentError("type must be :local or :remote, got :$type"))
     end
+    if task_number < 1 || task_number > manager.total_tasks
+        throw(ArgumentError("task_number must be in 1:$(manager.total_tasks), got $(task_number)"))
+    end
     if type === :local
-        ch = _ensure_local_channel!(manager)
-        return ProgressTask(task_number, ch)
+        slots = _ensure_local_slots!(manager)
+        return ProgressTask(task_number, slots[task_number])
     end
 
     distributed_ext = Base.get_extension(MultiProgressManagers, :MultiProgressManagersDistributedExt)
@@ -215,9 +272,20 @@ end
             total_steps::Union{Int,Nothing} = nothing,
             message::String="")
 
-Send a progress update for this task. The master's listener coalesces queued
-updates and writes the latest per-task state to the DB.
+Send a progress update for this task. Local tasks overwrite a per-task slot;
+remote tasks enqueue a message that the master pumps into the same slots.
+The poller writes the latest per-task state to the DB.
 """
+function update!(
+        task::ProgressTask{LocalProgressSlot};
+        step::Union{Int, Nothing} = nothing,
+        total_steps::Union{Int, Nothing} = nothing,
+        message::String = "",
+    )
+    _publish_update!(task.channel, step, total_steps, message)
+    return nothing
+end
+
 function update!(
         task::ProgressTask{C};
         step::Union{Int, Nothing} = nothing,
@@ -232,8 +300,13 @@ end
 """
     finish!(task::ProgressTask)
 
-Signal that this task is complete. The master's listener will call `finish!` on the DB.
+Signal that this task is complete. The master's poller will persist the finished state.
 """
+function finish!(task::ProgressTask{LocalProgressSlot})
+    _publish_finish!(task.channel)
+    return nothing
+end
+
 function finish!(task::ProgressTask{C}) where {C}
     put!(task.channel, TaskFinished(task.task_number))
     return nothing
@@ -242,8 +315,13 @@ end
 """
     fail!(task::ProgressTask; message::String="Task failed")
 
-Signal that this task has failed. The master's listener will call `fail!` on the DB.
+Signal that this task has failed. The master's poller will persist the failed state.
 """
+function fail!(task::ProgressTask{LocalProgressSlot}; message::String = "Task failed")
+    _publish_fail!(task.channel, message)
+    return nothing
+end
+
 function fail!(task::ProgressTask{C}; message::String = "Task failed") where {C}
     put!(task.channel, TaskFailed(task.task_number, message))
     return nothing
