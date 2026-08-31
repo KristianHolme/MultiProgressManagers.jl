@@ -116,9 +116,17 @@ function _update_running_tab!(m::ProgressDashboard, evt::KeyEvent)
         return
     end
     if evt.key == :up || evt.key == :ctrl && evt.char == 'k'
-        m.task_scroll_offset = max(0, m.task_scroll_offset - 1)
+        m.task_scroll_offset = _clamped_task_scroll_offset(
+            m.task_scroll_offset - 1,
+            length(m._selected_tasks),
+            m._task_list_visible,
+        )
     elseif evt.key == :down || evt.key == :ctrl && evt.char == 'j'
-        m.task_scroll_offset += 1
+        m.task_scroll_offset = _clamped_task_scroll_offset(
+            m.task_scroll_offset + 1,
+            length(m._selected_tasks),
+            m._task_list_visible,
+        )
     end
     return
 end
