@@ -83,6 +83,7 @@ end
     task_list_msg_delta::Int = 0  # offset from 50% Msg/Desc split; a/d to adjust
     selected_task::Int = 0
     running_focus::Int = 2  # 2=Tasks only (Details tab)
+    _task_list_visible::Int = 0  # last rendered task-list rows; used to clamp scroll
     
     # Admin data (used for runs list/details)
     admin_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])

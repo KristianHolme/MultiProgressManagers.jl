@@ -2,6 +2,22 @@
 Running experiments tab - shows active experiments with real-time metrics.
 """
 
+"""
+    _clamped_task_scroll_offset(offset, num_tasks, num_visible)
+
+Clamp a task-list scroll offset so extra down-arrow presses cannot walk past
+the last visible window. When `num_visible` is unknown (`<= 0`), allow at most
+the last task as the top row.
+"""
+function _clamped_task_scroll_offset(offset::Int, num_tasks::Int, num_visible::Int)::Int
+    max_offset = if num_visible > 0
+        max(0, num_tasks - num_visible)
+    else
+        max(0, num_tasks - 1)
+    end
+    return clamp(offset, 0, max_offset)
+end
+
 function _view_running_tab!(m::ProgressDashboard, area::Rect, buf)
     # Split area: 30% top, 70% bottom
     main_layout = Layout(Vertical, [Percent(30), Fill()])
@@ -167,6 +183,8 @@ function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
         )
     end
     if isempty(tasks)
+        m.task_scroll_offset = 0
+        m._task_list_visible = 0
         return _render_task_placeholder!(
             area,
             buf;
@@ -214,14 +232,21 @@ function _view_task_list!(m::ProgressDashboard, area::Rect, buf::Buffer)
     y = header_y + 1
     max_y = bottom(inner_area)
 
+    num_tasks = length(tasks)
     num_visible = max_y - y
     if num_visible <= 0
+        m._task_list_visible = 0
+        m.task_scroll_offset = _clamped_task_scroll_offset(m.task_scroll_offset, num_tasks, 0)
         return
     end
 
-    num_tasks = length(tasks)
-    scroll_offset = min(m.task_scroll_offset, max(0, num_tasks - num_visible))
-    start_idx = scroll_offset + 1
+    m._task_list_visible = num_visible
+    m.task_scroll_offset = _clamped_task_scroll_offset(
+        m.task_scroll_offset,
+        num_tasks,
+        num_visible,
+    )
+    start_idx = m.task_scroll_offset + 1
     end_idx = min(start_idx + num_visible - 1, num_tasks)
 
     for i in start_idx:end_idx

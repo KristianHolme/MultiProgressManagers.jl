@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Clamp Details-tab task-list scroll at the last visible row so extra down-arrow presses at the bottom do not require matching up-arrow presses.
+
 ## [0.1.3]
 
 - Document coalesced local/remote `ProgressTask` updates in the README after the recent performance work, and fix the same-process Quick Start example.
