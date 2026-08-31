@@ -17,6 +17,12 @@
 # measures remote `update!` / IPC / listener overhead rather than an in-process
 # `RemoteChannel`.
 #
+# Worker step code lives in `BenchSteps.jl`, loaded into `Main` here and on
+# each `addprocs` worker via `@everywhere` (Julia manual, "Code Availability
+# and Loading Packages"). AirspeedVelocity includes this file into
+# `Main.AirspeedVelocityRunner`; `remotecall` looks up functions by module, so
+# the worker methods cannot be the ones defined in that wrapper.
+#
 # Run from the package root (needs several threads):
 #
 #   julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add("AirspeedVelocity"); Pkg.build("AirspeedVelocity")'
@@ -34,81 +40,15 @@ const SPIN_CALLERS = (1, 4, 8, 16, 24)
 const REMOTE_SPIN_CALLERS = (1, 4)
 const ULTRAFAST_STEPS = 10_000
 
-const _SINK = Ref{Int}(0)
+const _BENCH_STEPS_PATH = joinpath(@__DIR__, "BenchSteps.jl")
+const _BENCH_STEPS_SRC = read(_BENCH_STEPS_PATH, String)
 const _REMOTE_BENCH_READY_NPROCS = Ref(0)
 
-# Installed on extra workers after `addprocs`. Keep in sync with `_sink`,
-# `wait_ns`, and `run_steps!` in this file so `remotecall_wait` can resolve
-# those names on the worker.
-const _REMOTE_BENCH_CODE = quote
-    const _SINK = Ref{Int}(0)
-
-    @noinline function _sink(step::Int)
-        _SINK[] = step
-        return nothing
-    end
-
-    function wait_ns(duration_ns::UInt64)
-        t0 = time_ns()
-        while (time_ns() - t0) < duration_ns
-        end
-        return nothing
-    end
-
-    function run_steps!(n_steps::Int, spin_ns::UInt64, task::ProgressTask)
-        for step in 1:n_steps
-            if spin_ns > 0
-                wait_ns(spin_ns)
-            end
-            update!(task; step = step, total_steps = n_steps, message = "step $step")
-        end
-        finish!(task)
-        return nothing
-    end
-
-    function run_steps!(n_steps::Int, spin_ns::UInt64, ::Nothing)
-        for step in 1:n_steps
-            if spin_ns > 0
-                wait_ns(spin_ns)
-            end
-            _sink(step)
-        end
-        return nothing
-    end
+if !isdefined(Main, :BenchSteps)
+    include_string(Main, _BENCH_STEPS_SRC, _BENCH_STEPS_PATH)
 end
 
-@noinline function _sink(step::Int)
-    _SINK[] = step
-    return nothing
-end
-
-function wait_ns(duration_ns::UInt64)
-    t0 = time_ns()
-    while (time_ns() - t0) < duration_ns
-    end
-    return nothing
-end
-
-function run_steps!(n_steps::Int, spin_ns::UInt64, task::ProgressTask)
-    for step in 1:n_steps
-        if spin_ns > 0
-            wait_ns(spin_ns)
-        end
-        update!(task; step = step, total_steps = n_steps, message = "step $step")
-    end
-    finish!(task)
-    return nothing
-end
-
-function run_steps!(n_steps::Int, spin_ns::UInt64, ::Nothing)
-    for step in 1:n_steps
-        if spin_ns > 0
-            wait_ns(spin_ns)
-        end
-        _sink(step)
-    end
-    return nothing
-end
+using Main.BenchSteps: run_steps!
 
 function run_ultrafast_mpm!(state)
     run_steps!(ULTRAFAST_STEPS, zero(UInt64), only(state.tasks))
@@ -157,13 +97,20 @@ function _worker_exeflags()
     return `--project=$(project)`
 end
 
-function _install_remote_bench_code!(pids::AbstractVector{Int})
-    if isempty(pids)
+function _load_bench_steps!(pids::AbstractVector{Int})
+    src = _BENCH_STEPS_SRC
+    file = _BENCH_STEPS_PATH
+    remote_pids = filter(pid -> pid != myid(), collect(Int, pids))
+    if isempty(remote_pids)
         return nothing
     end
-    Distributed.remotecall_eval(Main, pids, :(using Distributed))
-    Distributed.remotecall_eval(Main, pids, :(using MultiProgressManagers))
-    Distributed.remotecall_eval(Main, pids, _REMOTE_BENCH_CODE)
+    # `@everywhere` evaluates under `Main` on the given workers. Interpolate
+    # `$src` / `$file` so the source is sent with the expression (same pattern
+    # as `include_string` in the Julia distributed-computing manual).
+    @everywhere remote_pids begin
+        using MultiProgressManagers
+        include_string(Main, $src, $file)
+    end
     return nothing
 end
 
@@ -171,10 +118,10 @@ function ensure_remote_workers!(n::Int)
     extra = nprocs() - 1
     if extra < n
         added = addprocs(n - extra; exeflags = _worker_exeflags())
-        _install_remote_bench_code!(added)
+        _load_bench_steps!(added)
         _REMOTE_BENCH_READY_NPROCS[] = nprocs()
     elseif _REMOTE_BENCH_READY_NPROCS[] < nprocs()
-        _install_remote_bench_code!(workers())
+        _load_bench_steps!(workers())
         _REMOTE_BENCH_READY_NPROCS[] = nprocs()
     end
     pids = workers()
