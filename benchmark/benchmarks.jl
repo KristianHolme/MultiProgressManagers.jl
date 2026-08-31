@@ -107,10 +107,9 @@ function _load_bench_steps!(pids::AbstractVector{Int})
     # `@everywhere` evaluates under `Main` on the given workers. Interpolate
     # `$src` / `$file` so the source is sent with the expression (same pattern
     # as `include_string` in the Julia distributed-computing manual).
-    @everywhere remote_pids begin
-        using MultiProgressManagers
-        include_string(Main, $src, $file)
-    end
+    # Do not put `using` in this block: `@everywhere` lifts imports to a
+    # `toplevel` expression, which is illegal inside a function.
+    @everywhere remote_pids include_string(Main, $src, $file)
     return nothing
 end
 
