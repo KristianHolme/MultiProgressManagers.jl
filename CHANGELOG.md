@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fix AirspeedVelocity remote benchmarks: load worker step code into `Main.BenchSteps` with `@everywhere` so `remotecall` no longer looks up `AirspeedVelocityRunner` on Distributed workers.
+
 ## [0.1.4]
 
 - Clamp Details-tab task-list scroll at the last visible row so extra down-arrow presses at the bottom do not require matching up-arrow presses.
