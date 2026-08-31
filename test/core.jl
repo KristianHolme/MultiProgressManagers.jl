@@ -281,6 +281,66 @@ end
     end
 end
 
+@testset "Dashboard: task list scroll offset is clamped" begin
+    @test MPM._clamped_task_scroll_offset(0, 10, 5) == 0
+    @test MPM._clamped_task_scroll_offset(3, 10, 5) == 3
+    @test MPM._clamped_task_scroll_offset(10, 10, 5) == 5
+    @test MPM._clamped_task_scroll_offset(-4, 10, 5) == 0
+    @test MPM._clamped_task_scroll_offset(20, 3, 10) == 0
+    @test MPM._clamped_task_scroll_offset(20, 10, 0) == 9
+    @test MPM._clamped_task_scroll_offset(0, 0, 0) == 0
+
+    log_dir = mktempdir()
+    test_db = joinpath(log_dir, "scroll.db")
+    n_tasks = 40
+    manager = MPM.ProgressManager("ScrollClamp", n_tasks; db_path = test_db)
+    try
+        for i in 1:n_tasks
+            MPM.update!(manager, i; step = 1, total_steps = 10, message = "task $i")
+        end
+
+        dashboard = MPM.ProgressDashboard(
+            db_path = log_dir,
+            db_handles = Dict(test_db => manager.db_handle),
+            folder_mode = true,
+            folder_path = log_dir,
+            available_dbs = [test_db],
+            poll_frequency_ms = 0,
+            active_tab = 2,
+        )
+        MPM._poll_database!(dashboard)
+        @test length(dashboard._selected_tasks) == n_tasks
+
+        backend = TK.TestBackend(130, 20)
+        frame = _frame_for_backend(backend)
+        TK.view(dashboard, frame)
+        @test dashboard._task_list_visible > 0
+        @test dashboard._task_list_visible < n_tasks
+        max_offset = n_tasks - dashboard._task_list_visible
+        @test max_offset > 0
+        @test dashboard.task_scroll_offset == 0
+
+        # Overshooting the bottom must not accumulate extra offset.
+        dashboard.task_scroll_offset = 10_000
+        TK.view(dashboard, frame)
+        @test dashboard.task_scroll_offset == max_offset
+
+        down = TK.key(:down)
+        for _ in 1:10
+            TK.update!(dashboard, down)
+            TK.view(dashboard, frame)
+        end
+        @test dashboard.task_scroll_offset == max_offset
+
+        TK.update!(dashboard, TK.key(:up))
+        TK.view(dashboard, frame)
+        @test dashboard.task_scroll_offset == max_offset - 1
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(log_dir; force = true, recursive = true)
+    end
+end
+
 @testset "Folder dashboards aggregate all database files" begin
     folder = mktempdir()
     db_one = joinpath(folder, "alpha.db")
