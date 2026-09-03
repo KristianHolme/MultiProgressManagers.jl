@@ -203,12 +203,43 @@ function close_db!(handle::DBHandle)
     return nothing
 end
 
+function _schema_table_count(db::SQLite.DB)
+    row = _execute_first_row(
+        db,
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('experiments', 'tasks')",
+    )
+    if row === nothing
+        return 0
+    end
+    return Int(row.n)
+end
+
+function _ensure_tasks_description_column!(db::SQLite.DB)
+    table_info = DBInterface.execute(db, "PRAGMA table_info(tasks)") |> DataFrame
+    if "name" in names(table_info)
+        col_names = table_info.name
+        if !("description" in col_names)
+            DBInterface.execute(db, "ALTER TABLE tasks ADD COLUMN description TEXT DEFAULT ''")
+        end
+    end
+    return nothing
+end
+
 """
     _init_schema!(db::SQLite.DB)
 
 Internal: Initialize database schema with tables and indexes.
+
+Existing databases skip `CREATE TABLE` / `CREATE INDEX`. Those statements take a
+write lock, and a dashboard opening the same file as a live writer can then stall
+or fail — after which task bars stop updating.
 """
 function _init_schema!(db::SQLite.DB)
+    if _schema_table_count(db) == 2
+        _ensure_tasks_description_column!(db)
+        return nothing
+    end
+
     DBInterface.execute(
         db,
         """
@@ -244,14 +275,7 @@ function _init_schema!(db::SQLite.DB)
         """
     )
 
-    # Migration: add description column to existing tasks tables that don't have it
-    table_info = DBInterface.execute(db, "PRAGMA table_info(tasks)") |> DataFrame
-    if "name" in names(table_info)
-        col_names = table_info.name
-        if !("description" in col_names)
-            DBInterface.execute(db, "ALTER TABLE tasks ADD COLUMN description TEXT DEFAULT ''")
-        end
-    end
+    _ensure_tasks_description_column!(db)
 
     DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_exp_status ON experiments(status)")
     DBInterface.execute(db, "CREATE INDEX IF NOT EXISTS idx_tasks_exp ON tasks(experiment_id)")

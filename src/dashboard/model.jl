@@ -231,6 +231,14 @@ function _dashboard_db_error_message(e)::String
     return sprint(showerror, e)
 end
 
+function _is_transient_dashboard_db_error(e)::Bool
+    if !_is_dashboard_db_error(e)
+        return false
+    end
+    error_str = lowercase(_dashboard_db_error_message(e))
+    return occursin("locked", error_str) || occursin("busy", error_str)
+end
+
 function _invalidate_db_handle!(handle::Database.DBHandle)
     Database.close!(handle)
     return nothing
@@ -250,6 +258,9 @@ function _collect_experiment_frames(handle_pairs, db_errors::Dict{String,String}
         catch e
             if !_is_dashboard_db_error(e)
                 rethrow(e)
+            end
+            if _is_transient_dashboard_db_error(e)
+                continue
             end
             _invalidate_db_handle!(handle)
             db_errors[source_db_path] = _dashboard_db_error_message(e)
@@ -351,6 +362,9 @@ function _refresh_selected_tasks!(m::ProgressDashboard)
     catch e
         if !_is_dashboard_db_error(e)
             rethrow(e)
+        end
+        if _is_transient_dashboard_db_error(e)
+            return nothing
         end
         _invalidate_db_handle!(handle)
         if db_path !== nothing
