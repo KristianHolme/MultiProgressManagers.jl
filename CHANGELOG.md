@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- [#56](https://github.com/KristianHolme/MultiProgressManagers.jl/issues/56) Dashboard: coerce non-numeric SQLite TEXT in task integer/float columns instead of crashing with `MethodError` in `_snapshot_int` when selecting a run.
 - Fix individual task progress bars freezing at 0% or 1%: the poller no longer treats an untouched `0/0` worker slot as an explicit reset (that wiped `total_steps` or killed the listener), opening an existing database skips schema/`PRAGMA` write-locks, and the dashboard keeps the last task snapshot across transient SQLite busy/locked reads.
 
 ## [0.1.5]

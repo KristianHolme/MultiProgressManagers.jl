@@ -644,12 +644,29 @@ function get_experiment_tasks(handle::DBHandle, experiment_id::String)
 end
 
 _snapshot_int(::Missing) = 0
+_snapshot_int(::Nothing) = 0
 _snapshot_int(value::Integer) = Int(value)
-_snapshot_int(value) = Int(value)
+function _snapshot_int(value::AbstractString)
+    parsed = tryparse(Int, strip(value))
+    if parsed === nothing
+        return 0
+    end
+    return parsed
+end
+_snapshot_int(value::Real) = Int(value)
+_snapshot_int(_) = 0
 
 _snapshot_float(::Missing) = 0.0
+_snapshot_float(::Nothing) = 0.0
 _snapshot_float(value::Real) = Float64(value)
-_snapshot_float(value) = Float64(value)
+function _snapshot_float(value::AbstractString)
+    parsed = tryparse(Float64, strip(value))
+    if parsed === nothing
+        return 0.0
+    end
+    return parsed
+end
+_snapshot_float(_) = 0.0
 
 _snapshot_str(::Missing) = ""
 _snapshot_str(::Nothing) = ""
