@@ -479,10 +479,12 @@ end
         write(io, "corrupt")
     end
 
+    bad_handle = nothing
     try
+        bad_handle = Database.init_db!(bad_db)
         dashboard = MPM.ProgressDashboard(
             db_path = folder,
-            db_handles = Dict(bad_db => Database.init_db!(bad_db)),
+            db_handles = Dict(bad_db => bad_handle),
             folder_mode = true,
             folder_path = folder,
             available_dbs = [bad_db],
@@ -499,7 +501,9 @@ end
         @test _buffer_contains(backend, "Could not read database file(s)")
         @test _buffer_contains(backend, "broken.db")
     finally
-        Database.close_db!(dashboard.db_handles[bad_db])
+        if bad_handle !== nothing
+            Database.close_db!(bad_handle)
+        end
         rm(folder; force = true, recursive = true)
     end
 end

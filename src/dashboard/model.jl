@@ -224,7 +224,7 @@ function _refresh_folder_databases!(m::ProgressDashboard, current_time::Float64)
 end
 
 function _is_dashboard_db_error(e)::Bool
-    return e isa SQLiteException || e isa IOError || e isa SystemError
+    return e isa SQLiteException || e isa Base.IOError || e isa SystemError
 end
 
 function _dashboard_db_error_message(e)::String
