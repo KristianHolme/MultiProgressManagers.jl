@@ -8,6 +8,23 @@ using Distributed
 const MPM = MultiProgressManagers
 const TK = MPM.Tachikoma
 
+function _wait_for_task_row(
+    manager::MPM.ProgressManager,
+    predicate;
+    timeout_seconds::Float64 = 10.0,
+)
+    deadline = time() + timeout_seconds
+    tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+    while time() < deadline
+        tasks = Database.get_experiment_tasks(manager.db_handle, manager.experiment_id)
+        if nrow(tasks) > 0 && predicate(tasks[1, :])
+            return tasks[1, :]
+        end
+        sleep(0.01)
+    end
+    return nrow(tasks) > 0 ? tasks[1, :] : nothing
+end
+
 function _wait_for_task_completion(
     manager::MPM.ProgressManager;
     timeout_seconds::Float64 = 10.0,
@@ -955,6 +972,123 @@ end
         end
         Database.close_db!(manager.db_handle)
         rm(test_db, force = true)
+    end
+end
+
+@testset "ProgressTask slot 0/0 does not freeze bars at 0% or 1%" begin
+    test_db = tempname() * ".db"
+    manager = MPM.ProgressManager("SlotZeroFreeze", 1; db_path = test_db)
+    task = MPM.get_task(manager, 1, :local)
+    try
+        MPM.update!(manager, 1; step = 1, total_steps = 100, message = "via manager")
+        MPM.update!(task; message = "heartbeat")
+        row = _wait_for_task_row(
+            manager,
+            r -> coalesce(get(r, :display_message, missing), "") == "heartbeat";
+            timeout_seconds = 5.0,
+        )
+        @test row !== nothing
+        @test row.current_step == 1
+        @test row.total_steps == 100
+        @test manager._listener_task !== nothing
+        @test !istaskfailed(manager._listener_task)
+
+        MPM.update!(task; step = 40, total_steps = 100, message = "forty")
+        row = _wait_for_task_row(
+            manager,
+            r -> r.current_step == 40 && r.total_steps == 100;
+            timeout_seconds = 5.0,
+        )
+        @test row !== nothing
+        @test row.current_step == 40
+        @test row.total_steps == 100
+        @test coalesce(get(row, :display_message, missing), "") == "forty"
+        @test !istaskfailed(manager._listener_task)
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(test_db, force = true)
+    end
+
+    test_db_total = tempname() * ".db"
+    manager_total = MPM.ProgressManager("SlotZeroTotal", 1; db_path = test_db_total)
+    task_total = MPM.get_task(manager_total, 1, :local)
+    try
+        MPM.update!(manager_total, 1; total_steps = 100, message = "budget")
+        MPM.update!(task_total; message = "hello")
+        row = _wait_for_task_row(
+            manager_total,
+            r -> coalesce(get(r, :display_message, missing), "") == "hello";
+            timeout_seconds = 5.0,
+        )
+        @test row !== nothing
+        @test row.current_step == 0
+        @test row.total_steps == 100
+        @test manager_total._listener_task !== nothing
+        @test !istaskfailed(manager_total._listener_task)
+
+        MPM.update!(task_total; step = 40, total_steps = 100, message = "forty")
+        row = _wait_for_task_row(
+            manager_total,
+            r -> r.current_step == 40 && r.total_steps == 100;
+            timeout_seconds = 5.0,
+        )
+        @test row !== nothing
+        @test row.current_step == 40
+        @test row.total_steps == 100
+        @test !istaskfailed(manager_total._listener_task)
+    finally
+        Database.close_db!(manager_total.db_handle)
+        rm(test_db_total, force = true)
+    end
+end
+
+@testset "Dashboard reads advancing task bars from a separate handle" begin
+    log_dir = mktempdir()
+    test_db = joinpath(log_dir, "live.db")
+    manager = MPM.ProgressManager("LiveBars", 1; db_path = test_db)
+    task = MPM.get_task(manager, 1, :local)
+    dash_handle = nothing
+    try
+        MPM.update!(task; step = 1, total_steps = 100, message = "first")
+        @test _wait_for_task_row(manager, r -> r.current_step >= 1; timeout_seconds = 5.0) !== nothing
+
+        dash_handle = Database.init_db!(test_db)
+        dashboard = MPM.ProgressDashboard(
+            db_path = log_dir,
+            db_handles = Dict(test_db => dash_handle),
+            folder_mode = true,
+            folder_path = log_dir,
+            available_dbs = [test_db],
+            poll_frequency_ms = 0,
+            active_tab = 2,
+        )
+        MPM._poll_database!(dashboard)
+        @test isempty(dashboard.db_errors)
+        @test length(dashboard._selected_tasks) == 1
+        @test dashboard._selected_tasks[1].current_step >= 1
+        @test dashboard._selected_tasks[1].total_steps == 100
+
+        MPM.update!(task; step = 40, total_steps = 100, message = "forty")
+        row = _wait_for_task_row(manager, r -> r.current_step == 40; timeout_seconds = 5.0)
+        @test row !== nothing
+
+        dashboard._last_poll = 0.0
+        MPM._poll_database!(dashboard)
+        @test isempty(dashboard.db_errors)
+        @test dashboard._selected_tasks[1].current_step == 40
+        @test dashboard._selected_tasks[1].total_steps == 100
+
+        backend = TK.TestBackend(130, 36)
+        frame = _frame_for_backend(backend)
+        TK.view(dashboard, frame)
+        @test _buffer_contains(backend, "40%")
+        @test !_buffer_contains(backend, "Could not read database file(s)")
+    finally
+        if dash_handle !== nothing
+            Database.close_db!(dash_handle)
+        end
+        Database.close_db!(manager.db_handle)
+        rm(log_dir; force = true, recursive = true)
     end
 end
 
