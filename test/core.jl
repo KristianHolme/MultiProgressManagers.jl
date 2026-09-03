@@ -525,6 +525,69 @@ end
     end
 end
 
+@testset "Dashboard: non-numeric SQLite integers do not crash task snapshots" begin
+    # SQLite INTEGER columns can store TEXT when the value is not numeric.
+    # The dashboard crashed with MethodError Int64(::String) in _snapshot_int
+    # when selecting such a run (issue #56).
+    bad_int_text = "6 runs, started 2026-09-03T13-51-224"
+
+    @test Database._snapshot_int(missing) == 0
+    @test Database._snapshot_int(4) == 4
+    @test Database._snapshot_int(bad_int_text) == 0
+
+    folder = mktempdir()
+    bad_db = joinpath(folder, "bad_int.db")
+    good_db = joinpath(folder, "good_int.db")
+
+    manager_bad = MPM.ProgressManager("BadIntExperiment", 1; db_path = bad_db)
+    sleep(0.02)
+    manager_good = MPM.ProgressManager("GoodIntExperiment", 1; db_path = good_db)
+
+    try
+        MPM.update!(manager_bad, 1; step = 2, total_steps = 5, message = "working")
+        MPM.update!(manager_good, 1; step = 1, total_steps = 3, message = "ok")
+
+        db = Database.ensure_open!(manager_bad.db_handle)
+        DBInterface.execute(
+            db,
+            "UPDATE tasks SET task_number = ? WHERE experiment_id = ?",
+            [bad_int_text, manager_bad.experiment_id],
+        )
+
+        snapshots = Database.get_task_snapshots(manager_bad.db_handle, manager_bad.experiment_id)
+        @test length(snapshots) == 1
+        @test snapshots[1].task_number == 0
+        @test snapshots[1].current_step == 2
+        @test snapshots[1].total_steps == 5
+        @test snapshots[1].display_message == "working"
+
+        dashboard = MPM.ProgressDashboard(
+            db_path = folder,
+            db_handles = Dict(
+                bad_db => manager_bad.db_handle,
+                good_db => manager_good.db_handle,
+            ),
+            folder_mode = true,
+            folder_path = folder,
+            available_dbs = [bad_db, good_db],
+            poll_frequency_ms = 0,
+        )
+        MPM._poll_database!(dashboard)
+        @test length(dashboard.admin_experiments) == 2
+        @test dashboard.selected_experiment_id == manager_good.experiment_id
+
+        TK.update!(dashboard, TK.key(:down))
+        @test dashboard.selected_experiment_id == manager_bad.experiment_id
+        @test dashboard._selected_tasks_loaded
+        @test length(dashboard._selected_tasks) == 1
+        @test dashboard._selected_tasks[1].task_number == 0
+    finally
+        Database.close_db!(manager_bad.db_handle)
+        Database.close_db!(manager_good.db_handle)
+        rm(folder; force = true, recursive = true)
+    end
+end
+
 @testset "Stress: rapid multithreaded ProgressTask updates" begin
     test_db = tempname() * ".db"
     total_tasks = max(4, min(16, Base.Threads.nthreads() * 4))
