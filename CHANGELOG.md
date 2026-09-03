@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.5]
+
 - Fix AirspeedVelocity remote benchmarks: load worker step code into `Main.BenchSteps` with `@everywhere` so `remotecall` no longer looks up `AirspeedVelocityRunner` on Distributed workers.
 
 ## [0.1.4]
