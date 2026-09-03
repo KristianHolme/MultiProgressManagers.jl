@@ -78,12 +78,15 @@ function _open_new_db(path::String)
         end
     end
     db = SQLite.DB(path)
-    DBInterface.execute(db, "PRAGMA busy_timeout = 5000;")
-    if is_new_database
-        DBInterface.execute(db, "PRAGMA journal_mode = WAL;")
+    with_retry() do
+        DBInterface.execute(db, "PRAGMA busy_timeout = 5000;")
+        if is_new_database
+            DBInterface.execute(db, "PRAGMA journal_mode = WAL;")
+            DBInterface.execute(db, "PRAGMA synchronous = NORMAL;")
+            DBInterface.execute(db, "PRAGMA temp_store = MEMORY;")
+        end
+        return nothing
     end
-    DBInterface.execute(db, "PRAGMA synchronous = NORMAL;")
-    DBInterface.execute(db, "PRAGMA temp_store = MEMORY;")
     _init_schema!(db)
     return db
 end

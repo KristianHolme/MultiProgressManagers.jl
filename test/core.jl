@@ -1042,20 +1042,18 @@ end
     end
 end
 
-@testset "Dashboard reads advancing task bars from a separate handle" begin
+@testset "Dashboard shows advancing ProgressTask bars past 1%" begin
     log_dir = mktempdir()
     test_db = joinpath(log_dir, "live.db")
     manager = MPM.ProgressManager("LiveBars", 1; db_path = test_db)
     task = MPM.get_task(manager, 1, :local)
-    dash_handle = nothing
     try
         MPM.update!(task; step = 1, total_steps = 100, message = "first")
         @test _wait_for_task_row(manager, r -> r.current_step >= 1; timeout_seconds = 5.0) !== nothing
 
-        dash_handle = Database.init_db!(test_db)
         dashboard = MPM.ProgressDashboard(
             db_path = log_dir,
-            db_handles = Dict(test_db => dash_handle),
+            db_handles = Dict(test_db => manager.db_handle),
             folder_mode = true,
             folder_path = log_dir,
             available_dbs = [test_db],
@@ -1084,9 +1082,6 @@ end
         @test _buffer_contains(backend, "40%")
         @test !_buffer_contains(backend, "Could not read database file(s)")
     finally
-        if dash_handle !== nothing
-            Database.close_db!(dash_handle)
-        end
         Database.close_db!(manager.db_handle)
         rm(log_dir; force = true, recursive = true)
     end

@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Fix individual task progress bars freezing at 0% or 1%: the poller no longer treats an untouched `0/0` worker slot as an explicit reset (that wiped `total_steps` or killed the listener), existing databases skip schema write-locks on open, and the dashboard keeps the last task snapshot across transient SQLite busy/locked reads.
+- Fix individual task progress bars freezing at 0% or 1%: the poller no longer treats an untouched `0/0` worker slot as an explicit reset (that wiped `total_steps` or killed the listener), opening an existing database skips schema/`PRAGMA` write-locks, and the dashboard keeps the last task snapshot across transient SQLite busy/locked reads.
 
 ## [0.1.5]
 
