@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fix individual task progress bars freezing at 0% or 1%: the poller no longer treats an untouched `0/0` worker slot as an explicit reset (that wiped `total_steps` or killed the listener), opening an existing database skips schema/`PRAGMA` write-locks, and the dashboard keeps the last task snapshot across transient SQLite busy/locked reads.
+
 ## [0.1.5]
 
 - [#54](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/54) Dashboard: catch per-database SQLite I/O and read errors during poll so one bad `.db` file does not crash the TUI; show failed DB count in the status bar and list unreadable files on the Runs tab.

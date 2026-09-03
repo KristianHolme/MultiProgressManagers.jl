@@ -231,25 +231,63 @@ function _dashboard_db_error_message(e)::String
     return sprint(showerror, e)
 end
 
+function _is_transient_dashboard_db_error(e)::Bool
+    if !_is_dashboard_db_error(e)
+        return false
+    end
+    error_str = lowercase(_dashboard_db_error_message(e))
+    return occursin("locked", error_str) || occursin("busy", error_str)
+end
+
 function _invalidate_db_handle!(handle::Database.DBHandle)
     Database.close!(handle)
     return nothing
 end
 
+function _push_experiment_frame!(
+    all_frames::Vector{DataFrame},
+    db_errors::Dict{String, String},
+    source_db_path::String,
+    handle::Database.DBHandle,
+)
+    all_exps = Database.get_all_experiments(handle; limit = 100)
+    delete!(db_errors, source_db_path)
+    if !isempty(all_exps)
+        all_exps.source_db_path = fill(source_db_path, nrow(all_exps))
+        push!(all_frames, all_exps)
+    end
+    return nothing
+end
+
 function _collect_experiment_frames(handle_pairs, db_errors::Dict{String,String})
     all_frames = DataFrame[]
+    n_transient = 0
 
     for (source_db_path, handle) in handle_pairs
         try
-            all_exps = Database.get_all_experiments(handle; limit = 100)
-            delete!(db_errors, source_db_path)
-            if !isempty(all_exps)
-                all_exps.source_db_path = fill(source_db_path, nrow(all_exps))
-                push!(all_frames, all_exps)
-            end
+            _push_experiment_frame!(all_frames, db_errors, source_db_path, handle)
         catch e
             if !_is_dashboard_db_error(e)
                 rethrow(e)
+            end
+            if _is_transient_dashboard_db_error(e)
+                recovered = false
+                for _ in 1:3
+                    sleep(0.02)
+                    try
+                        _push_experiment_frame!(all_frames, db_errors, source_db_path, handle)
+                        recovered = true
+                        break
+                    catch retry_e
+                        if !_is_transient_dashboard_db_error(retry_e)
+                            rethrow(retry_e)
+                        end
+                    end
+                end
+                if !recovered
+                    n_transient += 1
+                end
+                continue
             end
             _invalidate_db_handle!(handle)
             db_errors[source_db_path] = _dashboard_db_error_message(e)
@@ -257,12 +295,12 @@ function _collect_experiment_frames(handle_pairs, db_errors::Dict{String,String}
     end
 
     if isempty(all_frames)
-        return DataFrame()
+        return DataFrame(), n_transient
     end
 
     all_experiments_df = vcat(all_frames..., cols = :union)
     sort!(all_experiments_df, :started_at, rev = true)
-    return all_experiments_df
+    return all_experiments_df, n_transient
 end
 
 function _build_running_experiments(admin_experiments::Vector{ExperimentAdminView})
@@ -351,6 +389,9 @@ function _refresh_selected_tasks!(m::ProgressDashboard)
     catch e
         if !_is_dashboard_db_error(e)
             rethrow(e)
+        end
+        if _is_transient_dashboard_db_error(e)
+            return nothing
         end
         _invalidate_db_handle!(handle)
         if db_path !== nothing
@@ -449,7 +490,10 @@ function _poll_database!(m::ProgressDashboard)
         return nothing
     end
 
-    all_experiments_df = _collect_experiment_frames(handle_pairs, m.db_errors)
+    all_experiments_df, n_transient = _collect_experiment_frames(handle_pairs, m.db_errors)
+    if isempty(all_experiments_df) && n_transient > 0 && !isempty(m.admin_experiments)
+        return nothing
+    end
     m.admin_experiments = _build_admin_experiments(all_experiments_df)
     m.running_experiments = _build_running_experiments(m.admin_experiments)
 

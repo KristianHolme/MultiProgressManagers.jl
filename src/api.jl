@@ -167,6 +167,38 @@ function _stage_update!(
     return nothing
 end
 
+"""
+Apply a poller-copied slot snapshot without treating `0` as an explicit reset.
+
+Worker slots start at `current_step = 0` and `total_steps = 0`. A message-only
+`update!(task)` increments `seq` but leaves those zeros in place. Staging them
+through `_stage_update!` either wipes a known `total_steps` (dashboard bars stay
+at 0%) or throws on a lower step (the listener dies and bars freeze at the last
+persisted percent, often 1%).
+"""
+function _stage_slot_update!(
+        manager::ProgressManager,
+        task_number::Int,
+        current_step::Int,
+        total_steps::Int,
+    )
+    ts = manager.task_status[task_number]
+    new_step = max(ts.current_step, current_step)
+    new_total = if total_steps > 0
+        max(new_step, total_steps)
+    else
+        max(ts.total_steps, new_step)
+    end
+    new_status = ts.status == :completed ? :completed : :running
+    manager.task_status[task_number] = _updated_task_status(
+        ts;
+        total_steps = new_total,
+        current_step = new_step,
+        status = new_status,
+    )
+    return nothing
+end
+
 function _stage_finish!(manager::ProgressManager, task_number::Int)
     ts = manager.task_status[task_number]
     completed_steps = max(ts.total_steps, ts.current_step)

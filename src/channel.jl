@@ -211,13 +211,13 @@ function _poll_slots!(
         end
         last_seq[task_number] = seq
         if status == SLOT_FINISHED
-            _stage_update!(manager, task_number; step = current_step, total_steps = total_steps)
+            _stage_slot_update!(manager, task_number, current_step, total_steps)
             _stage_finish!(manager, task_number)
         elseif status == SLOT_FAILED
-            _stage_update!(manager, task_number; step = current_step, total_steps = total_steps)
+            _stage_slot_update!(manager, task_number, current_step, total_steps)
             _stage_fail!(manager, task_number)
         else
-            _stage_update!(manager, task_number; step = current_step, total_steps = total_steps)
+            _stage_slot_update!(manager, task_number, current_step, total_steps)
         end
         push!(dirty, task_number)
         if !isempty(message)
@@ -257,16 +257,34 @@ function _flush_dirty_tasks!(
     return nothing
 end
 
+function _is_listener_recoverable(e)
+    error_str = lowercase(sprint(showerror, e))
+    return occursin("locked", error_str) || occursin("busy", error_str)
+end
+
 function _listener_loop(manager::ProgressManager, slots::Vector{LocalProgressSlot})
     last_seq = zeros(UInt64, length(slots))
     try
         while true
             dirty = Set{Int}()
             messages = Dict{Int, String}()
-            terminal_count = _poll_slots!(manager, slots, last_seq, dirty, messages)
-            _flush_dirty_tasks!(manager, dirty, messages)
-            if terminal_count >= manager.total_tasks
-                break
+            try
+                terminal_count = _poll_slots!(manager, slots, last_seq, dirty, messages)
+                _flush_dirty_tasks!(manager, dirty, messages)
+                if terminal_count >= manager.total_tasks
+                    break
+                end
+            catch e
+                if e isa InvalidStateException && e.state === :closed
+                    rethrow(e)
+                end
+                if !_is_listener_recoverable(e)
+                    rethrow(e)
+                end
+                # Flush lost the write; replay dirty slots on the next pass.
+                for task_number in dirty
+                    last_seq[task_number] = UInt64(0)
+                end
             end
             sleep(LISTENER_COALESCE_SECONDS)
         end
