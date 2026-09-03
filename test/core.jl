@@ -425,6 +425,85 @@ end
     end
 end
 
+@testset "Dashboard survives per-database SQLite read errors" begin
+    folder = mktempdir()
+    good_db = joinpath(folder, "good.db")
+    bad_db = joinpath(folder, "bad.db")
+
+    manager = MPM.ProgressManager("GoodExperiment", 1; db_path = good_db)
+    open(bad_db, "w") do io
+        write(io, "not a sqlite database")
+    end
+
+    try
+        MPM.update!(manager, 1; step = 1, total_steps = 3, message = "ok")
+
+        dashboard = MPM.ProgressDashboard(
+            db_path = folder,
+            db_handles = Dict(
+                good_db => manager.db_handle,
+                bad_db => Database.init_db!(bad_db),
+            ),
+            folder_mode = true,
+            folder_path = folder,
+            available_dbs = [good_db, bad_db],
+            poll_frequency_ms = 0,
+        )
+
+        MPM._poll_database!(dashboard)
+        @test length(dashboard.admin_experiments) == 1
+        @test dashboard.admin_experiments[1].name == "GoodExperiment"
+        @test haskey(dashboard.db_errors, bad_db)
+        @test !haskey(dashboard.db_errors, good_db)
+        @test occursin("database", lowercase(dashboard.db_errors[bad_db]))
+
+        backend = TK.TestBackend(130, 36)
+        frame = _frame_for_backend(backend)
+        TK.view(dashboard, frame)
+        @test _buffer_contains(backend, "DB error")
+
+        dashboard.active_tab = 2
+        dashboard.selected_experiment_id = manager.experiment_id
+        TK.view(dashboard, frame)
+        @test _buffer_contains(backend, "Tasks for GoodExperiment")
+    finally
+        Database.close_db!(manager.db_handle)
+        rm(folder; force = true, recursive = true)
+    end
+end
+
+@testset "Dashboard shows unreadable databases when all files fail" begin
+    folder = mktempdir()
+    bad_db = joinpath(folder, "broken.db")
+    open(bad_db, "w") do io
+        write(io, "corrupt")
+    end
+
+    try
+        dashboard = MPM.ProgressDashboard(
+            db_path = folder,
+            db_handles = Dict(bad_db => Database.init_db!(bad_db)),
+            folder_mode = true,
+            folder_path = folder,
+            available_dbs = [bad_db],
+            poll_frequency_ms = 0,
+        )
+
+        MPM._poll_database!(dashboard)
+        @test isempty(dashboard.admin_experiments)
+        @test haskey(dashboard.db_errors, bad_db)
+
+        backend = TK.TestBackend(130, 24)
+        frame = _frame_for_backend(backend)
+        TK.view(dashboard, frame)
+        @test _buffer_contains(backend, "Could not read database file(s)")
+        @test _buffer_contains(backend, "broken.db")
+    finally
+        Database.close_db!(dashboard.db_handles[bad_db])
+        rm(folder; force = true, recursive = true)
+    end
+end
+
 @testset "Stress: rapid multithreaded ProgressTask updates" begin
     test_db = tempname() * ".db"
     total_tasks = max(4, min(16, Base.Threads.nthreads() * 4))

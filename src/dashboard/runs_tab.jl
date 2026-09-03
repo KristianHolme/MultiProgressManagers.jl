@@ -28,7 +28,29 @@ function _view_runs_tab!(m::ProgressDashboard, area::Rect, buf::Buffer)
     experiments = m.admin_experiments
     
     if isempty(experiments)
-        set_string!(buf, inner.x, inner.y + 1, "No experiments found", tstyle(:text_dim); max_x = right(inner))
+        y = inner.y + 1
+        if isempty(m.db_errors)
+            set_string!(buf, inner.x, y, "No experiments found", tstyle(:text_dim); max_x = right(inner))
+        else
+            set_string!(
+                buf,
+                inner.x,
+                y,
+                "Could not read database file(s):",
+                tstyle(:error);
+                max_x = right(inner),
+            )
+            y += 1
+            for (db_path, err_msg) in sort(collect(m.db_errors))
+                label = basename(db_path)
+                line = "  $label: $err_msg"
+                set_string!(buf, inner.x, y, line, tstyle(:text_dim); max_x = right(inner))
+                y += 1
+                if y > bottom(inner)
+                    break
+                end
+            end
+        end
         return
     end
     

@@ -6,6 +6,7 @@ using Tachikoma
 using Dates
 using Match
 using DataFrames
+using SQLite
 
 import Tachikoma: TabBar, SelectableList, ListItem, Table, Gauge, Sparkline, 
                   BarChart, BarEntry, TextInput, ResizableLayout, split_layout,
@@ -102,6 +103,9 @@ end
     # Cache
     _selected_tasks::Vector{Database.TaskSnapshot} = Database.TaskSnapshot[]
     _selected_tasks_loaded::Bool = false
+
+    # Per-database read errors (path => message); cleared when that file reads successfully again
+    db_errors::Dict{String,String} = Dict{String,String}()
 end
 
 # === Helper Functions ===
@@ -219,14 +223,36 @@ function _refresh_folder_databases!(m::ProgressDashboard, current_time::Float64)
     return nothing
 end
 
-function _collect_experiment_frames(handle_pairs)
+function _is_dashboard_db_error(e)::Bool
+    return e isa SQLiteException || e isa IOError || e isa SystemError
+end
+
+function _dashboard_db_error_message(e)::String
+    return sprint(showerror, e)
+end
+
+function _invalidate_db_handle!(handle::Database.DBHandle)
+    Database.close!(handle)
+    return nothing
+end
+
+function _collect_experiment_frames(handle_pairs, db_errors::Dict{String,String})
     all_frames = DataFrame[]
 
     for (source_db_path, handle) in handle_pairs
-        all_exps = Database.get_all_experiments(handle; limit = 100)
-        if !isempty(all_exps)
-            all_exps.source_db_path = fill(source_db_path, nrow(all_exps))
-            push!(all_frames, all_exps)
+        try
+            all_exps = Database.get_all_experiments(handle; limit = 100)
+            delete!(db_errors, source_db_path)
+            if !isempty(all_exps)
+                all_exps.source_db_path = fill(source_db_path, nrow(all_exps))
+                push!(all_frames, all_exps)
+            end
+        catch e
+            if !_is_dashboard_db_error(e)
+                rethrow(e)
+            end
+            _invalidate_db_handle!(handle)
+            db_errors[source_db_path] = _dashboard_db_error_message(e)
         end
     end
 
@@ -315,8 +341,24 @@ function _refresh_selected_tasks!(m::ProgressDashboard)
         return nothing
     end
 
-    m._selected_tasks = Database.get_task_snapshots(handle, m.selected_experiment_id)
-    m._selected_tasks_loaded = true
+    db_path = _db_path_for_experiment(m, m.selected_experiment_id)
+    try
+        m._selected_tasks = Database.get_task_snapshots(handle, m.selected_experiment_id)
+        m._selected_tasks_loaded = true
+        if db_path !== nothing
+            delete!(m.db_errors, db_path)
+        end
+    catch e
+        if !_is_dashboard_db_error(e)
+            rethrow(e)
+        end
+        _invalidate_db_handle!(handle)
+        if db_path !== nothing
+            m.db_errors[db_path] = _dashboard_db_error_message(e)
+        end
+        empty!(m._selected_tasks)
+        m._selected_tasks_loaded = false
+    end
     return nothing
 end
 
@@ -407,7 +449,7 @@ function _poll_database!(m::ProgressDashboard)
         return nothing
     end
 
-    all_experiments_df = _collect_experiment_frames(handle_pairs)
+    all_experiments_df = _collect_experiment_frames(handle_pairs, m.db_errors)
     m.admin_experiments = _build_admin_experiments(all_experiments_df)
     m.running_experiments = _build_running_experiments(m.admin_experiments)
 

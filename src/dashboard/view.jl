@@ -111,7 +111,7 @@ function _render_status_bar!(m::ProgressDashboard, area::Rect, buf)
     
     # Running count
     running_count = count(e -> e.status == :running, m.running_experiments)
-    
+
     left = [
         Span(" $(SPINNER_BRAILLE[si]) ", tstyle(:accent)),
         Span(folder_label, tstyle(:primary)),
@@ -120,6 +120,13 @@ function _render_status_bar!(m::ProgressDashboard, area::Rect, buf)
         Span("  $(DOT)  ", tstyle(:border)),
         Span("poll: $(m.poll_frequency_ms)ms", tstyle(:text_dim)),
     ]
+
+    if !isempty(m.db_errors)
+        n_err = length(m.db_errors)
+        err_label = "$(n_err) DB error" * (n_err == 1 ? "" : "s")
+        push!(left, Span("  $(DOT)  ", tstyle(:border)))
+        push!(left, Span(err_label, tstyle(:error)))
+    end
     
     right_parts = ["[1-2] tabs  [q]uit  [r]efresh  [↑↓]nav"]
     if m.active_tab == 1 && m.confirm_mark_failed_id === nothing
