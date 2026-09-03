@@ -4,6 +4,7 @@
 
 ## [0.1.5]
 
+- [#54](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/54) Dashboard: catch per-database SQLite I/O and read errors during poll so one bad `.db` file does not crash the TUI; show failed DB count in the status bar and list unreadable files on the Runs tab.
 - Fix AirspeedVelocity remote benchmarks: load worker step code into `Main.BenchSteps` with `@everywhere` so `remotecall` no longer looks up `AirspeedVelocityRunner` on Distributed workers.
 
 ## [0.1.4]
