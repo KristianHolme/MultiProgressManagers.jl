@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add headless CLI query commands: `mpm list|show|tasks <folder> …` with human tables and `--json` (JSON.jl), exit codes `0/1/2`, and shared `.db` discovery with the dashboard. Bare `mpm <folder>` still opens Tachikoma.
+
 ## [0.1.6]
 
 - [#57](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/57) Dashboard: coerce non-numeric SQLite TEXT in task integer/float columns instead of crashing with `MethodError` in `_snapshot_int` when selecting a run.

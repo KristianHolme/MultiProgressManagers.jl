@@ -23,14 +23,21 @@ using Pkg
 Pkg.add("MultiProgressManagers")
 ```
 
-**App / CLI** (optional, for the `mpm` dashboard from the shell):
+**App / CLI** (optional, for the `mpm` dashboard and headless queries from the shell):
 
 ```julia
 using Pkg
 Pkg.Apps.add("MultiProgressManagers")
 ```
 
-Ensure `~/.julia/bin` is on your `PATH`. Then run `mpm <folder>` (the directory that contains your `.db` files) or `mpm --help`.  
+Ensure `~/.julia/bin` is on your `PATH`. Then:
+
+- `mpm <folder>` — interactive Tachikoma dashboard for every `.db` file in that folder
+- `mpm list <folder>` — list experiments (add `--json` / `--status running|completed|failed`)
+- `mpm show <folder> <exp>` — one experiment + tasks (`<exp>` = UUID, unique prefix, or unique name)
+- `mpm tasks <folder> <exp>` — tasks only (`--status` / `--json` supported)
+- `mpm --help` — full usage
+
 You can also open the dashboard from Julia without the app: `view_dashboard(folder)` (see Quick Start).
 
 ## Quick Start
@@ -115,6 +122,19 @@ callback = create_drill_callback(task)
 
 From the shell: `mpm ./progresslogs` opens the dashboard for every `.db` file in that folder (requires the app; see Installation).  
 From Julia: `using MultiProgressManagers; view_dashboard("./progresslogs")` does the same.
+
+### Headless CLI queries
+
+Query the same folder of `.db` files without a TTY (useful for scripts and agents):
+
+```bash
+mpm list ./progresslogs
+mpm list ./progresslogs --status running --json
+mpm show ./progresslogs train_sweep
+mpm tasks ./progresslogs train_sweep --status failed --json
+```
+
+Progress is shown as steps + percent (e.g. `8/500 (1.6%)`); experiment rows use the summed step totals across tasks. Exit codes: `0` success, `1` runtime error, `2` usage / not found / ambiguous. Unreadable `.db` files are skipped with a warning on stderr.
 
 ## Dashboard Tabs
 

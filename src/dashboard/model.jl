@@ -118,13 +118,8 @@ function _normalized_datetime(value)::Union{DateTime,Nothing}
     return value
 end
 
-function _discover_db_files(folder_path::String)
-    db_files = filter(readdir(folder_path; join = true)) do file_path
-        return endswith(lowercase(file_path), ".db")
-    end
-    sort!(db_files)
-    return db_files
-end
+_discover_db_files(folder_path::String) = discover_db_files(folder_path)
+
 
 function _open_dashboard_handles(db_paths::Vector{String})
     handles = Dict{String,Database.DBHandle}()
