@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-- Add headless CLI query commands: `mpm list|show|tasks <folder> …` with human tables and `--json` (JSON.jl), exit codes `0/1/2`, and shared `.db` discovery with the dashboard. Bare `mpm <folder>` still opens Tachikoma.
+## [0.1.7]
+
+- [#59](https://github.com/KristianHolme/MultiProgressManagers.jl/pull/59) Add headless CLI query commands: `mpm list|show|tasks <folder> …` with human tables and `--json` (JSON.jl), exit codes `0/1/2`, and shared `.db` discovery with the dashboard. Bare `mpm <folder>` still opens Tachikoma.
 
 ## [0.1.6]
 
