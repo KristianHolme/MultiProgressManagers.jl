@@ -1082,8 +1082,8 @@ function get_all_experiments(handle::DBHandle; limit::Int=100, offset::Int=0)
                 e.started_at,
                 e.finished_at,
                 COALESCE(c.completed_tasks, 0) as completed_tasks,
-                0 as total_steps,
-                0 as current_step,
+                COALESCE(s.total_steps, 0) as total_steps,
+                COALESCE(s.current_step, 0) as current_step,
                 CASE
                     WHEN e.total_tasks > 0
                     THEN CAST(COALESCE(c.completed_tasks, 0) AS FLOAT) / e.total_tasks
@@ -1096,6 +1096,14 @@ function get_all_experiments(handle::DBHandle; limit::Int=100, offset::Int=0)
                 WHERE status = 'completed'
                 GROUP BY experiment_id
             ) c ON c.experiment_id = e.id
+            LEFT JOIN (
+                SELECT
+                    experiment_id,
+                    SUM(total_steps) as total_steps,
+                    SUM(current_step) as current_step
+                FROM tasks
+                GROUP BY experiment_id
+            ) s ON s.experiment_id = e.id
             ORDER BY e.started_at DESC
             LIMIT ? OFFSET ?
             """,
@@ -1110,6 +1118,7 @@ function get_all_experiments(handle::DBHandle; limit::Int=100, offset::Int=0)
 
     return result
 end
+
 
 """
     calculate_speeds(handle::DBHandle, experiment_id::String) -> NamedTuple
