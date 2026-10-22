@@ -89,6 +89,46 @@ function _cli_db_error_message(e)::String
     return sprint(showerror, e)
 end
 
+function _is_transient_cli_db_error(e)::Bool
+    if !_is_cli_db_error(e)
+        return false
+    end
+    error_str = lowercase(_cli_db_error_message(e))
+    return occursin("locked", error_str) || occursin("busy", error_str)
+end
+
+function _read_experiments_from_db(db_path::String; limit_per_db::Int)
+    handle = Database.init_db!(db_path)
+    try
+        df = Database.get_all_experiments(handle; limit = limit_per_db)
+        experiments = ExperimentRow[_experiment_from_row(row, db_path) for row in eachrow(df)]
+        return experiments
+    finally
+        Database.close_db!(handle)
+    end
+end
+
+function _read_experiments_with_retry(db_path::String; limit_per_db::Int, max_attempts::Int = 5)
+    delay = 0.02
+    local last_error = nothing
+    for attempt in 1:max_attempts
+        try
+            return _read_experiments_from_db(db_path; limit_per_db = limit_per_db)
+        catch e
+            if !_is_transient_cli_db_error(e)
+                rethrow(e)
+            end
+            last_error = e
+            if attempt < max_attempts
+                sleep(delay * (1 + 0.1 * rand()))
+                delay *= 2
+            end
+        end
+    end
+    throw(last_error)
+end
+
+
 function _experiment_from_row(row, source_db_path::String)::ExperimentRow
     return ExperimentRow(
         _coalesce_str(row.id),
@@ -119,12 +159,8 @@ function load_folder_experiments(
     n_failed = 0
 
     for db_path in db_paths
-        handle = Database.init_db!(db_path)
         try
-            df = Database.get_all_experiments(handle; limit = limit_per_db)
-            for row in eachrow(df)
-                push!(experiments, _experiment_from_row(row, db_path))
-            end
+            append!(experiments, _read_experiments_with_retry(db_path; limit_per_db = limit_per_db))
         catch e
             if _is_cli_db_error(e)
                 n_failed += 1
@@ -132,10 +168,9 @@ function load_folder_experiments(
             else
                 rethrow(e)
             end
-        finally
-            Database.close_db!(handle)
         end
     end
+
 
     sort!(experiments; by = e -> something(e.started_at, DateTime(0)), rev = true)
     return experiments, n_failed
@@ -173,13 +208,28 @@ function resolve_experiment(experiments::Vector{ExperimentRow}, query::String)::
 end
 
 function load_tasks(exp::ExperimentRow)::Vector{Database.TaskSnapshot}
-    handle = Database.init_db!(exp.source_db_path)
-    try
-        return Database.get_task_snapshots(handle, exp.id)
-    finally
-        Database.close_db!(handle)
+    delay = 0.02
+    local last_error = nothing
+    for attempt in 1:5
+        handle = Database.init_db!(exp.source_db_path)
+        try
+            return Database.get_task_snapshots(handle, exp.id)
+        catch e
+            if !_is_transient_cli_db_error(e)
+                rethrow(e)
+            end
+            last_error = e
+            if attempt < 5
+                sleep(delay * (1 + 0.1 * rand()))
+                delay *= 2
+            end
+        finally
+            Database.close_db!(handle)
+        end
     end
+    throw(last_error)
 end
+
 
 function _filter_experiments(experiments::Vector{ExperimentRow}, status::Union{String,Nothing})
     status === nothing && return experiments

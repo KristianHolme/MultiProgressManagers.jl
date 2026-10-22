@@ -161,6 +161,9 @@ end
 
     try
         MPM.update!(manager, 1; step = 1, total_steps = 3, message = "ok")
+        # Release the writer so the CLI can open a separate read connection.
+        MPM.finish!(manager)
+        Database.close_db!(manager.db_handle)
 
         code, out, err = _cli_capture(["list", folder, "--json"])
         @test code == 0
@@ -170,10 +173,10 @@ end
         @test length(data) == 1
         @test data[1]["name"] == "GoodExperiment"
     finally
-        Database.close_db!(manager.db_handle)
         rm(folder; force = true, recursive = true)
     end
 end
+
 
 @testset "CLI fails when every database is unreadable" begin
     folder = mktempdir()
@@ -198,19 +201,25 @@ end
     db2 = joinpath(folder, "two.db")
     m1 = MPM.ProgressManager("dup", 1; db_path = db1)
     m2 = MPM.ProgressManager("dup", 1; db_path = db2)
+    id1 = m1.experiment_id
+    id2 = m2.experiment_id
 
     try
+        MPM.finish!(m1)
+        MPM.finish!(m2)
+        Database.close_db!(m1.db_handle)
+        Database.close_db!(m2.db_handle)
+
         code, out, err = _cli_capture(["show", folder, "dup"])
         @test code == 2
         @test occursin("Ambiguous", err)
-        @test occursin(m1.experiment_id, err)
-        @test occursin(m2.experiment_id, err)
+        @test occursin(id1, err)
+        @test occursin(id2, err)
     finally
-        Database.close_db!(m1.db_handle)
-        Database.close_db!(m2.db_handle)
         rm(folder; force = true, recursive = true)
     end
 end
+
 
 @testset "discover_db_files shared helper" begin
     folder = mktempdir()
